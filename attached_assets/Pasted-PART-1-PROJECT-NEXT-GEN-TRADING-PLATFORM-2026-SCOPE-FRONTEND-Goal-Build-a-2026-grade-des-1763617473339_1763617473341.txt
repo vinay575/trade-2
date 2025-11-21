@@ -1,0 +1,268 @@
+PART 1 — PROJECT: NEXT-GEN TRADING PLATFORM (2026) — SCOPE + FRONTEND
+
+Goal:
+Build a 2026-grade, desktop-first, ultra-premium multi-asset trading platform (stocks, crypto, forex configurable).
+Audience: Pro traders + high-end retail (top 1%).
+Theme: Bold Orange → Black gradient, glass-morphism, neon accents.
+Design must be unique — DO NOT copy Zerodha, Robinhood, Binance, KuCoin etc.
+
+SCOPE (FULL END-TO-END DELIVERY)
+Frontend Stack
+
+Next.js 14 / React 18
+
+TypeScript
+
+Tailwind CSS with design tokens
+
+Zustand or Redux Toolkit
+
+React Query
+
+Socket.io client
+
+Trading charts: TradingView embed OR custom candlestick/depth charts
+
+i18n-ready
+
+Fully responsive (1440 / 1024 / 768 / 360)
+
+DESIGN SYSTEM
+Theme
+
+Background: #0F0F12
+
+Panels: #1B1B1F
+
+Gradient: #FF7A00 → #FF4500
+
+Neon glow: rgba(255,90,0,0.14)
+
+Success accent: teal
+
+Typography
+
+Condensed / semibold headers
+
+Desktop: 13 – 48px
+
+WCAG AA compliant
+
+Effects
+
+Cinematic shadows
+
+Soft 3D depth
+
+Live data pulse animations
+
+Glass-morphism panels
+
+FRONTEND DELIVERABLES
+
+A complete UI Kit + all pages + interactions:
+
+Component Library
+
+Buttons, Inputs, Modals, Sliders, Switches
+
+Chips, Tags, Filters
+
+Cards, Toasts, DataGrids (virtualized)
+
+Order Panel (reusable)
+
+Charts:
+
+Candlestick
+
+Depth
+
+Orderbook view
+
+Sparkline
+
+Real-time indicators
+
+PAGES / FLOWS
+Public Pages
+
+Landing Page (cinematic hero)
+
+About / Pricing / Security sections
+
+Auth & Security
+
+Register
+
+Login
+
+Email OTP
+
+2FA (TOTP + SMS fallback)
+
+Forgot password
+
+KYC Workflow
+
+Multi-step KYC wizard
+
+Doc upload + preview
+
+Status tracking
+
+Dashboard
+
+Balance
+
+P&L
+
+Wallet summary
+
+Realtime tickers
+
+AI insights cards
+
+News carousel
+
+Market Watch
+
+Multi-asset view
+
+Filters & search
+
+Watchlist (drag & drop)
+
+Grid / list toggle
+
+Trading Terminal
+
+Dockable order panel
+
+Chart with indicators
+
+Orderbook
+
+Depth chart
+
+Quick pair switching
+
+Market/Limit/Stop/OCO orders
+
+Execution feedback replay
+
+Portfolio
+
+3D radial allocation chart
+
+Heatmaps
+
+Transactions timeline
+
+CSV/PDF export
+
+Wallet
+
+Add money (UPI, cards, crypto)
+
+Withdraw
+
+Ledger view
+
+Settings
+
+Profile
+
+Bank accounts
+
+Security
+
+Notifications preferences
+
+Support
+
+Chatbot
+
+Ticketing
+
+Admin
+
+Dashboard
+
+KYC review queue
+
+User management
+
+Trade oversight stream
+
+Reports
+
+Asset manager
+
+API CONTRACTS (Frontend Integration)
+
+Base: /api/v1
+
+Auth
+
+POST /auth/register
+
+POST /auth/login
+
+POST /auth/otp
+
+POST /auth/verify-otp
+
+POST /auth/2fa/enable
+
+POST /auth/refresh
+
+KYC
+
+POST /kyc/upload (multipart)
+
+GET /kyc/status/{userId}
+
+Wallet
+
+POST /wallet/topup
+
+POST /wallet/withdraw
+
+GET /wallet/ledger
+
+Market
+
+GET /market/{type}/ticker?symbol=
+
+GET /market/{type}/orderbook?symbol=
+
+GET /market/{type}/history?symbol=&range=
+
+Trading
+
+POST /trade/place-order
+
+POST /trade/cancel-order
+
+GET /trade/orders
+
+GET /trade/trades
+
+Admin
+
+GET /admin/users
+
+POST /admin/kyc/action
+
+GET /admin/trades/stream
+
+WebSocket
+
+Namespaces:
+
+/ws/market
+
+/ws/user
+
+/ws/admin

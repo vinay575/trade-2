@@ -1,0 +1,207 @@
+PART 2 — BACKEND (MICROSERVICES) + DATA MODELS + SECURITY + OBSERVABILITY
+BACKEND CORE STACK
+
+NestJS (Preferred) or Express/TS
+
+PostgreSQL
+
+Redis
+
+Kafka (or RabbitMQ)
+
+Socket.io Gateway
+
+S3-compatible storage (MinIO or AWS)
+
+OpenAPI + Swagger
+
+BACKEND SERVICES (MICROSERVICES)
+
+Auth & User Service
+
+JWT access tokens
+
+Opaque refresh tokens in Redis
+
+Device binding
+
+2FA TOTP
+
+KYC Service
+
+Document upload
+
+Reviewer workflow
+
+S3 storage
+
+Status logs
+
+Market Data Ingestor
+
+Adapters for Binance, Finnhub, IBKR
+
+Normalized event stream
+
+Publish via Kafka
+
+Trading Engine / Order Matcher
+
+Dedicated microservice
+
+Limit order book per symbol
+
+Price-time priority
+
+Optimistic concurrency
+
+Emits trade.executed events
+
+Wallet & Payments
+
+Double-entry ledger
+
+Razorpay/Stripe/UPI connectors
+
+Crypto wallet support
+
+Admin Service
+
+RBAC
+
+User oversight
+
+Audit logs
+
+Notification Service
+
+Email (SendGrid)
+
+SMS (Twilio)
+
+Push notifications
+
+Analytics Service
+
+ETL jobs
+
+Reports
+
+Timeseries DB support
+
+API Gateway
+
+Rate limits
+
+Global auth
+
+WAF integration
+
+DATA MODELS
+Users
+
+(id, email, hashed_password, fullname, phone, roles[], status)
+
+KYC Docs
+
+(id, userId, type, s3Url, status, reviewerId, notes, timestamp)
+
+Wallet
+
+(id, userId, currency, balance, reserved, available)
+
+Ledger Entries
+
+(id, walletId, type, amount, txRef, metadata, createdAt)
+
+Orders
+
+(id, userId, symbol, side, type, price, qty, filledQty, status)
+
+Trades
+
+(id, buyOrderId, sellOrderId, price, qty, fee, timestamp)
+
+Assets
+
+(symbol, name, type, status, metadata)
+
+Admin Audit
+
+(id, adminId, action, target, notes, timestamp)
+
+SECURITY & COMPLIANCE
+
+JWT + refresh tokens (rotating)
+
+Session binding
+
+Bcrypt/Argon2 passwords
+
+TLS everywhere
+
+S3 encryption
+
+DB encryption at-rest
+
+Field-level encryption for sensitive PII
+
+Strict RBAC
+
+WAF + IP rate-limits
+
+Sanitization against XSS/SQL injection
+
+Immutable audit logs
+
+Incident response playbook
+
+Pen-test checklist
+
+PERFORMANCE & SCALE
+
+k8s Horizontal Pod Autoscaler
+
+Stateless pods
+
+Redis caching
+
+Postgres read replicas
+
+Kafka for async events
+
+Cross-region backups
+
+RPO/RTO targets
+
+Chaos testing
+
+OBSERVABILITY
+
+Metrics: Prometheus
+
+Dashboards: Grafana
+
+Logs: ELK or Loki
+
+Tracing: OpenTelemetry
+
+Alerts: PagerDuty
+
+Health checks for all services
+
+TESTING STRATEGY
+
+Unit (Jest)
+
+Integration (Supertest)
+
+e2e (Playwright/Cypress)
+
+Load tests (k6)
+
+SAST (Snyk)
+
+DAST
+
+GitHub Actions CI
