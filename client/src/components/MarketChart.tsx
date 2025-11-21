@@ -71,8 +71,9 @@ export function MarketChart({ symbol, name, assetType }: MarketChartProps) {
   })).filter(d => d.price !== null && d.price !== undefined);
 
   const currentPrice = result.meta?.regularMarketPrice || chartData[chartData.length - 1]?.price || 0;
-  const change = result.meta?.regularMarketChange || 0;
-  const changePercent = result.meta?.regularMarketChangePercent || 0;
+  const previousClose = result.meta?.regularMarketPreviousClose || currentPrice;
+  const change = currentPrice - previousClose;
+  const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
   
   // Determine color based on change
   const isPositive = change >= 0;
