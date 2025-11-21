@@ -54,6 +54,9 @@ export function getSession() {
     console.warn("[WARNING] SESSION_SECRET not set. Using default dev secret. Set SESSION_SECRET in .env for production.");
   }
   
+  // In Replit, we're behind a proxy, so we need to handle cookies differently
+  const isReplit = process.env.REPLIT_DEV_DOMAIN !== undefined;
+  
   return session({
     secret: sessionSecret,
     store: sessionStore,
@@ -61,8 +64,9 @@ export function getSession() {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      // In development on http://localhost we must allow non-secure cookies
-      secure: process.env.NODE_ENV === "production",
+      // Replit uses HTTPS externally but we need to allow cookies in proxy environment
+      secure: false, // Allow cookies to work through Replit's proxy
+      sameSite: 'lax', // Allow cookies for same-site requests
       maxAge: sessionTtl,
     },
   });

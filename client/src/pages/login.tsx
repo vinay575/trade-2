@@ -42,17 +42,20 @@ export default function Login() {
       const res = await apiRequest("POST", "/api/auth/login", data);
       return res;
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       // Invalidate and refetch user data
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
-      // Use setTimeout to ensure state updates before navigation
-      setTimeout(() => {
-        toast({
-          title: "Welcome back!",
-          description: "You have successfully logged in.",
-        });
-        setLocation("/dashboard");
-      }, 100);
+      await queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      // Refetch user data to get role
+      const userData = await queryClient.fetchQuery({ queryKey: ["/api/auth/user"] });
+      
+      toast({
+        title: "Welcome back!",
+        description: "You have successfully logged in.",
+      });
+      
+      // Redirect based on user role
+      const targetPath = (userData as any)?.role === "admin" ? "/admin/dashboard" : "/dashboard";
+      setLocation(targetPath);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.field) {

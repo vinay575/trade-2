@@ -44,13 +44,18 @@ export default function Signup() {
       const res = await apiRequest("POST", "/api/auth/signup", data);
       return res;
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       toast({
         title: "Success!",
         description: "Your account has been created successfully.",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
-      setLocation("/dashboard");
+      await queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      // Refetch user data to get role
+      const userData = await queryClient.fetchQuery({ queryKey: ["/api/auth/user"] });
+      
+      // Redirect based on user role
+      const targetPath = (userData as any)?.role === "admin" ? "/admin/dashboard" : "/dashboard";
+      setLocation(targetPath);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.field) {
