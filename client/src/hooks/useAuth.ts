@@ -4,7 +4,7 @@ import type { User } from "@shared/schema";
 import { useMemo } from "react";
 
 export function useAuth() {
-  const { data: user, isLoading } = useQuery<User | null>({
+  const { data: user, isLoading, isFetching, status } = useQuery<User | null>({
     queryKey: ["/api/auth/user"],
     queryFn: getQueryFn({ on401: "returnNull" }),
     retry: false,
@@ -17,7 +17,7 @@ export function useAuth() {
     // Suppress errors for 401 - it's expected for unauthenticated users
     throwOnError: false,
     // Use cached data if available to prevent unnecessary requests
-    placeholderData: (previousData) => previousData ?? null,
+    placeholderData: (previousData) => previousData,
     // Prevent refetching on network changes
     networkMode: 'offlineFirst',
     // Prevent structural sharing from causing re-renders
@@ -33,7 +33,10 @@ export function useAuth() {
   // Memoize the return value to prevent unnecessary re-renders
   return useMemo(() => ({
     user: user ?? null,
-    isLoading: isLoading && user === undefined,
+    isLoading: isLoading || isFetching,
     isAuthenticated: !!user,
-  }), [user, isLoading]);
+    // Auth is resolved when query has finished (success or error)
+    // This prevents hanging on network/server errors while still distinguishing from pending state
+    isResolved: status === 'success' || status === 'error',
+  }), [user, isLoading, isFetching, status]);
 }

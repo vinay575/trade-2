@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { PublicNavbar } from "@/components/PublicNavbar";
 import { GlassCard } from "@/components/GlassCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -103,7 +102,6 @@ export default function News() {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
-        <PublicNavbar />
         <div className="container mx-auto px-6 py-8">
           <div className="flex items-center justify-center min-h-[60vh]">
             <div className="text-center space-y-4">
@@ -118,7 +116,6 @@ export default function News() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-primary/5">
-      <PublicNavbar />
       <div className="container mx-auto px-6 py-8 space-y-6">
         <div className="flex items-center justify-between">
         <div>

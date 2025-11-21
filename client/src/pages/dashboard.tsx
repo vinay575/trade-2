@@ -1,10 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { useMarketWebSocket } from "@/hooks/useMarketWebSocket";
+import { useLocation } from "wouter";
 import { GlassCard } from "@/components/GlassCard";
 import { PriceDisplay } from "@/components/PriceDisplay";
-import { TickerCard } from "@/components/TickerCard";
+import { MarketChart } from "@/components/MarketChart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,24 +13,32 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 
 export default function Dashboard() {
   const { toast } = useToast();
-  const { isAuthenticated, isLoading } = useAuth();
-  const { marketData, isConnected } = useMarketWebSocket();
+  const [, setLocation] = useLocation();
+  const { isAuthenticated, isLoading, user, isResolved } = useAuth();
+  const hasRedirected = useRef(false);
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      toast({
-        title: "Unauthorized",
-        description: "You are logged out. Logging in again...",
-        variant: "destructive",
-      });
-      const timeoutId = setTimeout(() => {
-        window.location.href = "/login";
-      }, 500);
-      return () => clearTimeout(timeoutId);
+    // Only redirect once auth is definitively resolved
+    if (isResolved && !hasRedirected.current) {
+      if (!isAuthenticated) {
+        // User is definitively not authenticated
+        hasRedirected.current = true;
+        toast({
+          title: "Unauthorized",
+          description: "Please log in to continue.",
+          variant: "destructive",
+        });
+        setLocation("/login");
+      } else if (user && user.role === "admin") {
+        // User is admin, redirect to admin dashboard
+        hasRedirected.current = true;
+        setLocation("/admin/dashboard");
+      }
     }
-  }, [isAuthenticated, isLoading]); // Removed toast from dependencies
+  }, [isResolved, isAuthenticated, user, toast, setLocation]);
 
-  if (isLoading) {
+  // Show loading state while auth is being determined
+  if (!isResolved) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="animate-pulse text-primary text-xl font-condensed">Loading...</div>
@@ -38,16 +46,15 @@ export default function Dashboard() {
     );
   }
 
-  // Real ticker data from WebSocket - showing BTC/USD live data
-  const realTickers = marketData ? [{ 
-    symbol: marketData.symbol, 
-    name: marketData.symbol.split('/')[0], 
-    price: marketData.price, 
-    change: marketData.change, 
-    changePercent: marketData.changePercent, 
-    volume: marketData.volume, 
-    assetType: "crypto" as const 
-  }] : [];
+  // Popular assets to show in Live Market
+  const popularAssets = [
+    { symbol: "AAPL", name: "Apple", assetType: "stock" as const },
+    { symbol: "MSFT", name: "Microsoft", assetType: "stock" as const },
+    { symbol: "GOOGL", name: "Google", assetType: "stock" as const },
+    { symbol: "BTC-USD", name: "Bitcoin", assetType: "crypto" as const },
+    { symbol: "ETH-USD", name: "Ethereum", assetType: "crypto" as const },
+    { symbol: "TSLA", name: "Tesla", assetType: "stock" as const },
+  ];
 
   return (
     <div className="p-6 space-y-6">
@@ -56,7 +63,7 @@ export default function Dashboard() {
           <h1 className="text-4xl font-condensed font-bold mb-2" data-testid="text-dashboard-title">Dashboard</h1>
           <p className="text-muted-foreground">Welcome back, track your portfolio performance</p>
         </div>
-        <Button className="gap-2" data-testid="button-new-trade">
+        <Button className="gap-2" data-testid="button-new-trade" onClick={() => setLocation('/trading-terminal')}>
           <TrendingUp className="w-4 h-4" />
           New Trade
         </Button>
@@ -113,22 +120,11 @@ export default function Dashboard() {
         <div className="lg:col-span-2 space-y-6">
           <div>
             <h2 className="text-2xl font-condensed font-semibold mb-4">Live Market</h2>
-            {realTickers.length > 0 ? (
-              <ScrollArea className="w-full whitespace-nowrap">
-                <div className="flex gap-4 pb-4">
-                  {realTickers.map((ticker) => (
-                    <div key={ticker.symbol} className="w-80 shrink-0">
-                      <TickerCard {...ticker} />
-                    </div>
-                  ))}
-                </div>
-                <ScrollBar orientation="horizontal" />
-              </ScrollArea>
-            ) : (
-              <Card className="p-6">
-                <p className="text-muted-foreground text-center">Connecting to live market data...</p>
-              </Card>
-            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {popularAssets.map((asset) => (
+                <MarketChart key={asset.symbol} {...asset} />
+              ))}
+            </div>
           </div>
 
           <GlassCard className="p-6" neonBorder>
@@ -180,7 +176,7 @@ export default function Dashboard() {
               <p className="text-sm text-muted-foreground text-center py-4">
                 Visit the News page for real-time financial news and market analysis
               </p>
-              <Button variant="outline" className="w-full" size="sm" data-testid="button-view-all-news" onClick={() => window.location.href = '/news'}>
+              <Button variant="outline" className="w-full" size="sm" data-testid="button-view-all-news" onClick={() => setLocation('/news')}>
                 View All News
               </Button>
             </CardContent>
@@ -189,15 +185,15 @@ export default function Dashboard() {
           <GlassCard className="p-6">
             <h3 className="text-lg font-condensed font-semibold mb-4">Quick Actions</h3>
             <div className="space-y-2">
-              <Button variant="outline" className="w-full justify-start" data-testid="button-deposit">
+              <Button variant="outline" className="w-full justify-start" data-testid="button-deposit" onClick={() => setLocation('/deposit')}>
                 <Wallet className="w-4 h-4 mr-2" />
                 Deposit Funds
               </Button>
-              <Button variant="outline" className="w-full justify-start" data-testid="button-withdraw">
+              <Button variant="outline" className="w-full justify-start" data-testid="button-withdraw" onClick={() => setLocation('/withdraw')}>
                 <ArrowDownRight className="w-4 h-4 mr-2" />
                 Withdraw
               </Button>
-              <Button variant="outline" className="w-full justify-start" data-testid="button-market-watch">
+              <Button variant="outline" className="w-full justify-start" data-testid="button-market-watch" onClick={() => setLocation('/market-watch')}>
                 <TrendingUp className="w-4 h-4 mr-2" />
                 Market Watch
               </Button>
