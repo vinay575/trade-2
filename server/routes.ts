@@ -537,6 +537,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/portfolio/summary', authMiddleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+      
+      // Get wallet balance (cash)
+      let wallet = await storage.getWalletByUser(userId);
+      if (!wallet) {
+        wallet = await storage.createWallet({
+          userId,
+          balance: "0",
+          currency: "USD",
+        });
+      }
+      const cashBalance = parseFloat(wallet.balance) || 0;
+      
+      // Get holdings to calculate portfolio value and P&L
+      const holdings = await storage.getHoldingsByUser(userId);
+      
+      // Calculate holdings market value and unrealized P&L
+      let holdingsMarketValue = 0;
+      let unrealizedPnl = 0;
+      let openPositions = 0;
+      let profitablePositions = 0;
+      
+      for (const holding of holdings) {
+        const quantity = parseFloat(holding.quantity);
+        if (isNaN(quantity) || quantity <= 0) continue;
+        
+        openPositions++;
+        
+        const avgBuyPrice = parseFloat(holding.averageBuyPrice);
+        const currentPrice = parseFloat(holding.currentPrice || holding.averageBuyPrice);
+        
+        if (isNaN(avgBuyPrice) || isNaN(currentPrice)) continue;
+        
+        const marketValue = quantity * currentPrice;
+        const costBasis = quantity * avgBuyPrice;
+        const pnl = marketValue - costBasis;
+        
+        holdingsMarketValue += marketValue;
+        unrealizedPnl += pnl;
+        
+        if (currentPrice > avgBuyPrice) {
+          profitablePositions++;
+        }
+      }
+      
+      // Total portfolio value = cash + holdings market value
+      const totalBalance = cashBalance + holdingsMarketValue;
+      
+      // For simplicity, we'll show unrealized P&L as today's P&L
+      // In a real app, you'd track beginning-of-day portfolio value
+      const todaysPnl = unrealizedPnl;
+      
+      // Calculate percentage change, guarding against division by zero
+      const costBasis = totalBalance - unrealizedPnl;
+      let todaysPnlPercent = 0;
+      if (costBasis > 0) {
+        // Normal case: positive cost basis
+        todaysPnlPercent = (unrealizedPnl / costBasis) * 100;
+      } else if (costBasis === 0) {
+        // Zero cost basis (free assets): clamp to ±100%
+        todaysPnlPercent = unrealizedPnl > 0 ? 100 : unrealizedPnl < 0 ? -100 : 0;
+      } else {
+        // Negative cost basis (e.g., negative cash balance): use absolute value to preserve sign
+        todaysPnlPercent = (unrealizedPnl / Math.abs(costBasis)) * 100;
+      }
+      
+      // Calculate balance change (same as P&L for now)
+      const balanceChange = unrealizedPnl;
+      const balanceChangePercent = todaysPnlPercent;
+      
+      res.json({
+        totalBalance,
+        balanceChange,
+        balanceChangePercent,
+        todaysPnl,
+        todaysPnlPercent,
+        openPositions,
+        profitablePositions,
+        holdingsValue: holdingsMarketValue,
+        cashBalance,
+        unrealizedPnl,
+      });
+    } catch (error: any) {
+      console.error('Error fetching portfolio summary:', error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.get('/api/watchlist', authMiddleware, async (req: any, res) => {
     try {
       const userId = req.userId;

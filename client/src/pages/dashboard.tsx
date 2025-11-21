@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { GlassCard } from "@/components/GlassCard";
 import { PriceDisplay } from "@/components/PriceDisplay";
 import { MarketChart } from "@/components/MarketChart";
@@ -11,11 +12,31 @@ import { Button } from "@/components/ui/button";
 import { Wallet, TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Sparkles } from "lucide-react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 
+interface PortfolioSummary {
+  totalBalance: number;
+  balanceChange: number;
+  balanceChangePercent: number;
+  todaysPnl: number;
+  todaysPnlPercent: number;
+  openPositions: number;
+  profitablePositions: number;
+  holdingsValue: number;
+  cashBalance: number;
+  unrealizedPnl: number;
+}
+
 export default function Dashboard() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { isAuthenticated, isLoading, user, isResolved } = useAuth();
   const hasRedirected = useRef(false);
+
+  // Fetch portfolio summary data
+  const { data: portfolioSummary, isLoading: isLoadingPortfolio } = useQuery<PortfolioSummary>({
+    queryKey: ['/api/portfolio/summary'],
+    enabled: isAuthenticated && isResolved,
+    refetchInterval: 5000, // Refresh every 5 seconds for live updates
+  });
 
   useEffect(() => {
     // Only redirect once auth is definitively resolved
@@ -76,29 +97,58 @@ export default function Dashboard() {
             <Wallet className="w-5 h-5 text-primary" />
           </div>
           <div className="space-y-1">
-            <div className="text-3xl font-condensed font-bold" data-testid="text-total-balance">
-              $125,847.32
-            </div>
-            <PriceDisplay
-              value={0}
-              change={3456.78}
-              changePercent={2.82}
-              currency=""
-              size="sm"
-            />
+            {isLoadingPortfolio ? (
+              <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-total-balance">
+                Loading...
+              </div>
+            ) : (
+              <>
+                <div className="text-3xl font-condensed font-bold" data-testid="text-total-balance">
+                  ${portfolioSummary?.totalBalance?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                </div>
+                <PriceDisplay
+                  value={0}
+                  change={portfolioSummary?.balanceChange || 0}
+                  changePercent={portfolioSummary?.balanceChangePercent || 0}
+                  currency=""
+                  size="sm"
+                />
+              </>
+            )}
           </div>
         </GlassCard>
 
         <GlassCard className="p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium text-muted-foreground">Today's P&L</h3>
-            <ArrowUpRight className="w-5 h-5 text-gain" />
+            {portfolioSummary && portfolioSummary.todaysPnl >= 0 ? (
+              <ArrowUpRight className="w-5 h-5 text-gain" />
+            ) : (
+              <ArrowDownRight className="w-5 h-5 text-loss" />
+            )}
           </div>
           <div className="space-y-1">
-            <div className="text-3xl font-condensed font-bold text-gain" data-testid="text-pnl">
-              +$2,345.67
-            </div>
-            <div className="text-sm text-muted-foreground">+1.9% gain</div>
+            {isLoadingPortfolio ? (
+              <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-pnl">
+                Loading...
+              </div>
+            ) : (
+              <>
+                <div 
+                  className={`text-3xl font-condensed font-bold ${
+                    (portfolioSummary?.todaysPnl || 0) >= 0 ? 'text-gain' : 'text-loss'
+                  }`} 
+                  data-testid="text-pnl"
+                >
+                  {(portfolioSummary?.todaysPnl || 0) >= 0 ? '+' : ''}
+                  ${portfolioSummary?.todaysPnl?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {(portfolioSummary?.todaysPnlPercent || 0) >= 0 ? '+' : ''}
+                  {portfolioSummary?.todaysPnlPercent?.toFixed(2) || '0.00'}% {(portfolioSummary?.todaysPnl || 0) >= 0 ? 'gain' : 'loss'}
+                </div>
+              </>
+            )}
           </div>
         </GlassCard>
 
@@ -108,10 +158,20 @@ export default function Dashboard() {
             <TrendingUp className="w-5 h-5 text-primary" />
           </div>
           <div className="space-y-1">
-            <div className="text-3xl font-condensed font-bold" data-testid="text-open-positions">
-              12
-            </div>
-            <div className="text-sm text-muted-foreground">8 profitable</div>
+            {isLoadingPortfolio ? (
+              <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-open-positions">
+                Loading...
+              </div>
+            ) : (
+              <>
+                <div className="text-3xl font-condensed font-bold" data-testid="text-open-positions">
+                  {portfolioSummary?.openPositions || 0}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {portfolioSummary?.profitablePositions || 0} profitable
+                </div>
+              </>
+            )}
           </div>
         </GlassCard>
       </div>
