@@ -19,19 +19,13 @@ export function log(message: string, source = "express") {
 }
 
 export async function setupVite(app: Express, server: Server) {
-  const port = parseInt(process.env.PORT || '5000', 10);
-  const host = process.env.HOST || (process.platform === 'win32' ? 'localhost' : '0.0.0.0');
-  
   const serverOptions = {
     middlewareMode: true,
-    hmr: { 
-      server,
-      port: port,
-      host: host === '0.0.0.0' ? 'localhost' : host,
-      overlay: false, // Disable error overlay that might cause refreshes
-      clientPort: port, // Use same port for HMR
-    },
+    hmr: false, // Disable HMR to prevent constant refresh issues
     allowedHosts: true as const,
+    watch: {
+      usePolling: false,
+    },
   };
 
   const vite = await createViteServer({

@@ -33,8 +33,7 @@ export default defineConfig({
       deny: ["**/.*"],
     },
     hmr: {
-      overlay: false, // Disable error overlay
-      clientPort: 5000, // Use same port for HMR
+      overlay: false,
     },
   },
   build: {
