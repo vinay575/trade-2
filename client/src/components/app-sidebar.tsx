@@ -24,6 +24,7 @@ import {
   Activity,
   AlertTriangle,
   FileText,
+  History,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
@@ -43,6 +44,11 @@ const userMenuItems = [
     title: "Trading Terminal",
     url: "/trading-terminal",
     icon: BarChart3,
+  },
+  {
+    title: "Trade History",
+    url: "/trade-history",
+    icon: History,
   },
   {
     title: "Portfolio",

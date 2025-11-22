@@ -20,8 +20,8 @@ const TICKER_SYMBOLS: TickerItem[] = [
 ];
 
 function TickerItemComponent({ item }: { item: TickerItem }) {
-  // Load data once, no auto-refresh
-  const { data: quote, isLoading, error } = useYahooQuote(item.symbol, true, false);
+  // Enable auto-refresh for live updates (every 5 seconds)
+  const { data: quote, isLoading, error } = useYahooQuote(item.symbol, true, true);
 
   // Show loading state
   if (isLoading || (!quote && !error)) {

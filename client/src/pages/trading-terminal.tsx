@@ -1,7 +1,8 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useYahooQuote, useYahooCandles } from "@/hooks/useYahooFinance";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { GlassCard } from "@/components/GlassCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,14 +41,20 @@ export default function TradingTerminal() {
   const [selectedSymbol, setSelectedSymbol] = useState("AAPL");
   const [orderType, setOrderType] = useState<"market" | "limit" | "stop">("market");
   const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [timeframe, setTimeframe] = useState<"1h" | "4h" | "1d" | "1w">("1d");
+  const [timeframe, setTimeframe] = useState<"1m" | "1h" | "4h" | "1d" | "1w">("1d");
+  const [tradeTimeframe, setTradeTimeframe] = useState<"1m" | "1h" | "1d" | "1w">("1h");
+  const [amount, setAmount] = useState("");
+  const [limitPrice, setLimitPrice] = useState("");
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
-  // Get current quote - load once, no auto-refresh
-  const { data: quote, isLoading: isLoadingQuote } = useYahooQuote(selectedSymbol, true, false);
+  // Get current quote with live updates (every 1 second for real-time trading feel)
+  const { data: quote, isLoading: isLoadingQuote } = useYahooQuote(selectedSymbol, true, true);
 
   // Map timeframe to Yahoo Finance intervals and ranges
   const { interval, range } = useMemo(() => {
     switch (timeframe) {
+      case "1m":
+        return { interval: "1m", range: "1d" };
       case "1h":
         return { interval: "1h", range: "7d" };
       case "4h":
@@ -61,6 +68,7 @@ export default function TradingTerminal() {
     }
   }, [timeframe]);
 
+  // Update candles more frequently for live trading feel (every 1-2 seconds for 1m, 5s for others)
   const { data: candlesData, isLoading: isLoadingCandles } = useYahooCandles(
     selectedSymbol,
     interval,
@@ -68,8 +76,10 @@ export default function TradingTerminal() {
     true
   );
 
-  // Format candle data for charts
-  const chartData = useMemo(() => {
+  // Format candle data for charts - only recalculate when candles change, not on every quote update
+  const baseChartData = useMemo(() => {
+    const data: Array<{ time: number; price: number }> = [];
+    
     if (candlesData && candlesData.chart && candlesData.chart.result && candlesData.chart.result.length > 0) {
       try {
         const result = candlesData.chart.result[0];
@@ -77,18 +87,80 @@ export default function TradingTerminal() {
         const quotes = result.indicators?.quote?.[0];
         
         if (quotes && timestamps.length > 0) {
-          return timestamps.map((timestamp: number, i: number) => ({
-            time: new Date(timestamp * 1000).toLocaleDateString(),
+          const candleData = timestamps.map((timestamp: number, i: number) => ({
+            time: timestamp * 1000, // Store as timestamp in milliseconds
             price: quotes.close?.[i] || 0,
           })).filter(item => item.price > 0 && !isNaN(item.price));
+          
+          data.push(...candleData);
         }
       } catch (error) {
         console.error("Error processing candle data:", error);
       }
     }
     
-    return [];
-  }, [candlesData, timeframe]);
+    return data.sort((a, b) => a.time - b.time);
+  }, [candlesData, timeframe]); // Only recalculate when candles or timeframe change
+
+  // Merge live quote price - separate memo to avoid full chart re-render
+  // Use ref to track last update time and last price to prevent excessive re-renders
+  const lastUpdateRef = useRef<number>(0);
+  const lastPriceRef = useRef<number | null>(null);
+  const chartDataRef = useRef<Array<{ time: number; price: number }>>([]);
+  
+  const chartData = useMemo(() => {
+    // Only update chart data if enough time has passed (prevent flickering)
+    const now = Date.now();
+    const timeSinceLastUpdate = now - lastUpdateRef.current;
+    const minUpdateInterval = 5000; // Update at most every 5 seconds to prevent flickering
+    
+    if (!quote || !quote.regularMarketPrice || quote.regularMarketPrice <= 0) {
+      return baseChartData.length > 0 ? baseChartData : chartDataRef.current;
+    }
+
+    // Throttle updates to prevent continuous re-rendering
+    if (timeSinceLastUpdate < minUpdateInterval && baseChartData.length > 0) {
+      // Return cached data if update is too frequent
+      return chartDataRef.current.length > 0 ? chartDataRef.current : baseChartData;
+    }
+
+    // Only update if price changed significantly (0.1% threshold)
+    if (lastPriceRef.current !== null) {
+      const priceDiff = Math.abs(quote.regularMarketPrice - lastPriceRef.current);
+      const minPriceChange = lastPriceRef.current * 0.001; // 0.1% change threshold
+      if (priceDiff < minPriceChange && chartDataRef.current.length > 0) {
+        return chartDataRef.current; // Return cached data if price hasn't changed enough
+      }
+    }
+
+    lastUpdateRef.current = now;
+    lastPriceRef.current = quote.regularMarketPrice;
+    
+    // Remove any existing live price points (within last 60 seconds) to avoid duplicates
+    const filteredData = baseChartData.filter(item => {
+      const timeDiff = now - item.time;
+      return timeDiff > 60000; // Keep only points older than 60 seconds
+    });
+    
+    // Add the latest live price
+    filteredData.push({
+      time: now,
+      price: quote.regularMarketPrice,
+    });
+    
+    const sortedData = filteredData.sort((a, b) => a.time - b.time);
+    chartDataRef.current = sortedData; // Cache the result
+    return sortedData;
+  }, [baseChartData, quote?.regularMarketPrice]); // Only update when base data or quote price changes
+
+  // Get last data timestamp for freshness indicator
+  const lastDataTime = useMemo(() => {
+    if (chartData.length > 0) {
+      const lastTimestamp = chartData[chartData.length - 1].time;
+      return new Date(lastTimestamp);
+    }
+    return null;
+  }, [chartData]);
 
   const selectedSymbolData = SYMBOLS.find(s => s.value === selectedSymbol) || SYMBOLS[0];
 
@@ -118,6 +190,24 @@ export default function TradingTerminal() {
       total: Math.random() * 100000
     }))
   };
+
+  const queryClient = useQueryClient();
+  
+  // Fetch open positions
+  const { data: openPositions, refetch: refetchPositions } = useQuery<any[]>({
+    queryKey: ['/api/trade/open-positions'],
+    enabled: isAuthenticated,
+    refetchInterval: 5000, // Refresh every 5 seconds
+    queryFn: async () => {
+      const res = await fetch('/api/trade/open-positions', {
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        return [];
+      }
+      return res.json();
+    },
+  });
 
   const chartConfig = {
     price: {
@@ -179,9 +269,31 @@ export default function TradingTerminal() {
           {/* Chart */}
           <GlassCard className="p-6 h-[500px]" neonBorder>
             <div className="flex items-center justify-between mb-4">
+              <div>
               <h3 className="font-condensed font-semibold text-lg">Price Chart</h3>
+                {lastDataTime && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Last update: {lastDataTime.toLocaleString("en-US", { 
+                      month: "short", 
+                      day: "numeric", 
+                      hour: "2-digit", 
+                      minute: "2-digit" 
+                    })}
+                    {(() => {
+                      const now = new Date();
+                      const diffMs = now.getTime() - lastDataTime.getTime();
+                      const diffMins = Math.floor(diffMs / 60000);
+                      if (diffMins < 60) {
+                        return ` (${diffMins}m ago)`;
+                      }
+                      const diffHours = Math.floor(diffMins / 60);
+                      return ` (${diffHours}h ago)`;
+                    })()}
+                  </p>
+                )}
+              </div>
               <div className="flex gap-2">
-                {(["1h", "4h", "1d", "1w"] as const).map((tf) => (
+                {(["1m", "1h", "4h", "1d", "1w"] as const).map((tf) => (
                   <Button
                     key={tf}
                     variant={timeframe === tf ? "default" : "outline"}
@@ -203,12 +315,23 @@ export default function TradingTerminal() {
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis 
                     dataKey="time" 
-                    tick={{ fill: "hsl(var(--muted-foreground))" }}
+                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
+                    interval="preserveStartEnd"
+                    minTickGap={50}
                     tickFormatter={(value) => {
                       const date = new Date(value);
-                      return timeframe === "1d" || timeframe === "1w" 
-                        ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                        : date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                      if (timeframe === "1w") {
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                      } else if (timeframe === "1d") {
+                        return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                      } else if (timeframe === "4h") {
+                        return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                      } else if (timeframe === "1h") {
+                        return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                      } else if (timeframe === "1m") {
+                        return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                      }
+                      return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
                     }}
                   />
                   <YAxis 
@@ -237,6 +360,98 @@ export default function TradingTerminal() {
               </div>
             )}
           </GlassCard>
+
+          {/* Open Positions */}
+          {openPositions && openPositions.length > 0 && (
+            <GlassCard className="p-6">
+              <h3 className="font-condensed font-semibold text-lg mb-4">Open Positions</h3>
+              <ScrollArea className="h-64">
+                <div className="space-y-2">
+                  {openPositions.map((position: any) => {
+                    const entryPrice = parseFloat(position.averagePrice || position.price || "0");
+                    const quantity = parseFloat(position.quantity);
+                    const isSelected = position.symbol === selectedSymbol;
+                    
+                    return (
+                      <div
+                        key={position.id}
+                        className={`p-3 rounded-md border ${
+                          isSelected ? "border-primary bg-primary/10" : "border-border/50"
+                        } hover-elevate cursor-pointer`}
+                        onClick={() => setSelectedSymbol(position.symbol)}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-semibold">{position.symbol}</span>
+                              <Badge variant="secondary" className="text-xs">{position.assetType}</Badge>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              <span>Qty: {quantity.toFixed(4)}</span>
+                              <span className="mx-2">•</span>
+                              <span>Entry: ${entryPrice.toFixed(2)}</span>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const priceRes = await fetch(`/api/yahoo/quote/${position.symbol}`);
+                                if (!priceRes.ok) throw new Error("Failed to get price");
+                                const priceData = await priceRes.json();
+                                const currentPrice = priceData.chart?.result?.[0]?.meta?.regularMarketPrice;
+
+                                const sellOrder = {
+                                  symbol: position.symbol,
+                                  assetType: position.assetType,
+                                  type: "market",
+                                  side: "sell",
+                                  quantity: position.quantity,
+                                  price: null,
+                                  timeframe: null,
+                                };
+
+                                await fetch("/api/trade/place-order", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  credentials: "include",
+                                  body: JSON.stringify(sellOrder),
+                                });
+
+                                await fetch("/api/trade/close-order", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  credentials: "include",
+                                  body: JSON.stringify({ orderId: position.id }),
+                                });
+
+                                toast({
+                                  title: "Position Sold",
+                                  description: `Sold ${quantity} ${position.symbol}`,
+                                });
+
+                                refetchPositions();
+                              } catch (error: any) {
+                                toast({
+                                  title: "Sell Failed",
+                                  description: error.message,
+                                  variant: "destructive",
+                                });
+                              }
+                            }}
+                          >
+                            Sell
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </GlassCard>
+          )}
 
           {/* Order Book */}
           <GlassCard className="p-6">
@@ -322,25 +537,185 @@ export default function TradingTerminal() {
                 {orderType !== "market" && (
                   <div>
                     <Label className="text-xs">Price</Label>
-                    <Input type="number" placeholder="0.00" data-testid="input-price" />
+                    <Input 
+                      type="number" 
+                      placeholder="0.00" 
+                      value={limitPrice}
+                      onChange={(e) => setLimitPrice(e.target.value)}
+                      data-testid="input-price" 
+                    />
                   </div>
                 )}
 
                 <div>
+                  <Label className="text-xs">Trade Duration</Label>
+                  <Select value={tradeTimeframe} onValueChange={(v) => setTradeTimeframe(v as any)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1m">1 Minute</SelectItem>
+                      <SelectItem value="1h">1 Hour</SelectItem>
+                      <SelectItem value="1d">1 Day</SelectItem>
+                      <SelectItem value="1w">1 Week</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div>
                   <Label className="text-xs">Amount</Label>
-                  <Input type="number" placeholder="0.00" data-testid="input-amount" />
+                  <Input 
+                    type="number" 
+                    placeholder="0.00" 
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    data-testid="input-amount" 
+                  />
                 </div>
 
                 <div>
                   <Label className="text-xs">Total</Label>
-                  <Input type="number" placeholder="0.00" disabled data-testid="input-total" />
+                  <Input 
+                    type="number" 
+                    placeholder="0.00" 
+                    disabled 
+                    value={amount && quote ? (parseFloat(amount) * quote.regularMarketPrice).toFixed(2) : ""}
+                    data-testid="input-total" 
+                  />
                 </div>
 
                 <Button
                   className={`w-full ${side === "buy" ? "bg-gain hover:bg-gain/90" : "bg-destructive hover:bg-destructive/90"}`}
                   data-testid={`button-${side}`}
+                  disabled={isPlacingOrder || !amount || parseFloat(amount) <= 0}
+                  onClick={async () => {
+                    if (!amount || parseFloat(amount) <= 0) {
+                      toast({
+                        title: "Invalid Amount",
+                        description: "Please enter a valid amount",
+                        variant: "destructive",
+                      });
+                      return;
+                    }
+
+                    setIsPlacingOrder(true);
+                    try {
+                      const orderData = {
+                        symbol: selectedSymbol,
+                        assetType: selectedSymbolData.type.toLowerCase(),
+                        type: orderType,
+                        side: side,
+                        quantity: amount,
+                        price: orderType === "market" ? null : limitPrice,
+                        stopPrice: orderType === "stop" ? limitPrice : null,
+                        timeframe: tradeTimeframe,
+                      };
+
+                      const response = await fetch("/api/trade/place-order", {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                        },
+                        credentials: "include",
+                        body: JSON.stringify(orderData),
+                      });
+
+                      if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.message || "Failed to place order");
+                      }
+
+                      const order = await response.json();
+                      
+                      console.log("Order placed successfully:", order);
+                      
+                      toast({
+                        title: "Order Placed",
+                        description: `${side === "buy" ? "Buy" : "Sell"} order for ${amount} ${selectedSymbolData.label} placed successfully${order.type === "market" ? " and executed" : ""}`,
+                      });
+
+                      // Reset form
+                      setAmount("");
+                      setLimitPrice("");
+
+                      // Refresh all data immediately after trade
+                      await Promise.all([
+                        refetchPositions(),
+                        queryClient.invalidateQueries({ queryKey: ['/api/trade/trades'] }),
+                        queryClient.invalidateQueries({ queryKey: ['/api/trade/open-positions'] }),
+                        queryClient.invalidateQueries({ queryKey: ['/api/portfolio/summary'] }),
+                        queryClient.invalidateQueries({ queryKey: ['/api/wallet/summary'] }),
+                        queryClient.invalidateQueries({ queryKey: ['/api/wallet/ledger'] }),
+                      ]);
+                      
+                      // Force immediate refetch to show updated balance
+                      await Promise.all([
+                        queryClient.refetchQueries({ queryKey: ['/api/trade/trades'] }),
+                        queryClient.refetchQueries({ queryKey: ['/api/trade/open-positions'] }),
+                        queryClient.refetchQueries({ queryKey: ['/api/portfolio/summary'] }),
+                        queryClient.refetchQueries({ queryKey: ['/api/wallet/summary'] }),
+                        queryClient.refetchQueries({ queryKey: ['/api/wallet/ledger'] }),
+                      ]);
+
+                      // If market order, schedule auto-close based on timeframe
+                      if (orderType === "market" && order.status === "filled") {
+                        const timeframeMs: Record<string, number> = {
+                          "1m": 60 * 1000,
+                          "1h": 60 * 60 * 1000,
+                          "1d": 24 * 60 * 60 * 1000,
+                          "1w": 7 * 24 * 60 * 60 * 1000,
+                        };
+                        
+                        setTimeout(async () => {
+                          try {
+                            const closeResponse = await fetch("/api/trade/close-order", {
+                              method: "POST",
+                              headers: {
+                                "Content-Type": "application/json",
+                              },
+                              credentials: "include",
+                              body: JSON.stringify({ orderId: order.id }),
+                            });
+                            
+                            if (closeResponse.ok) {
+                              // Invalidate all related queries after auto-close
+                              await Promise.all([
+                                refetchPositions(),
+                                queryClient.invalidateQueries({ queryKey: ['/api/trade/trades'] }),
+                                queryClient.invalidateQueries({ queryKey: ['/api/trade/open-positions'] }),
+                                queryClient.invalidateQueries({ queryKey: ['/api/portfolio/summary'] }),
+                                queryClient.invalidateQueries({ queryKey: ['/api/wallet/summary'] }),
+                              ]);
+                              
+                              toast({
+                                title: "Trade Auto-Closed",
+                                description: `Trade for ${selectedSymbolData.label} has been automatically closed`,
+                              });
+                            }
+                          } catch (error) {
+                            console.error("Failed to auto-close order:", error);
+                          }
+                        }, timeframeMs[tradeTimeframe]);
+                      }
+                    } catch (error: any) {
+                      toast({
+                        title: "Order Failed",
+                        description: error.message || "Failed to place order",
+                        variant: "destructive",
+                      });
+                    } finally {
+                      setIsPlacingOrder(false);
+                    }
+                  }}
                 >
-                  {side === "buy" ? "Buy" : "Sell"} {selectedSymbolData.label}
+                  {isPlacingOrder ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Placing...
+                    </>
+                  ) : (
+                    `${side === "buy" ? "Buy" : "Sell"} ${selectedSymbolData.label}`
+                  )}
                 </Button>
               </TabsContent>
             </Tabs>

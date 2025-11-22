@@ -168,10 +168,13 @@ async function requestYahooQuote(yahooSymbol: string): Promise<YahooQuote> {
   };
 }
 
-async function loadYahooQuote(yahooSymbol: string): Promise<YahooQuote> {
-  if (quoteCache.has(yahooSymbol)) {
+async function loadYahooQuote(yahooSymbol: string, bypassCache: boolean = false): Promise<YahooQuote> {
+  // Bypass cache if requested (for live updates)
+  if (!bypassCache && quoteCache.has(yahooSymbol)) {
     return quoteCache.get(yahooSymbol)!;
   }
+  
+  // If there's already a pending request, wait for it
   if (quotePromises.has(yahooSymbol)) {
     return quotePromises.get(yahooSymbol)!;
   }
@@ -200,6 +203,7 @@ interface QuoteState {
 export function useYahooQuote(
   symbol: string,
   enabled: boolean = true,
+  autoRefresh: boolean = true,
 ) {
   const yahooSymbol = useMemo(() => convertSymbol(symbol), [symbol]);
   const [state, setState] = useState<QuoteState>({
@@ -223,7 +227,9 @@ export function useYahooQuote(
 
     let cancelled = false;
 
-    async function fetchOnce() {
+    async function fetchQuote(bypassCache: boolean = false) {
+      if (cancelled || !mountedRef.current) return;
+
       setState((prev) => ({
         ...prev,
         isLoading: true,
@@ -231,7 +237,9 @@ export function useYahooQuote(
       }));
 
       try {
-        const data = await loadYahooQuote(yahooSymbol);
+        // For live updates, bypass cache to get fresh data
+        const data = await loadYahooQuote(yahooSymbol, bypassCache);
+        
         if (!cancelled && mountedRef.current) {
           setState({
             data,
@@ -250,12 +258,26 @@ export function useYahooQuote(
       }
     }
 
-    fetchOnce();
+    // Initial fetch
+    fetchQuote(false);
+
+    // Set up auto-refresh every 3 seconds - balance between live updates and performance
+    let refreshInterval: NodeJS.Timeout | null = null;
+    if (autoRefresh) {
+      refreshInterval = setInterval(() => {
+        if (!cancelled && mountedRef.current && enabled) {
+          fetchQuote(true); // Bypass cache for live updates
+        }
+      }, 3000); // 3 seconds - reduces flickering while maintaining live feel
+    }
 
     return () => {
       cancelled = true;
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+      }
     };
-  }, [enabled, yahooSymbol]);
+  }, [enabled, yahooSymbol, autoRefresh]);
 
   return state;
 }
@@ -267,11 +289,21 @@ const intervalMap: Record<string, string> = {
   W: "1wk",
 };
 
+// Map intervals to appropriate ranges for Yahoo Finance API
 const rangeMap: Record<string, string> = {
-  "1h": "7d",
-  "4h": "1mo",
+  "1m": "1d",
+  "2m": "1d",
+  "5m": "1d",
+  "15m": "5d",
+  "30m": "1mo",
+  "60m": "1mo",
+  "90m": "1mo",
+  "1h": "1mo",
+  "4h": "3mo",
   "1d": "1y",
-  "1w": "2y",
+  "5d": "2y",
+  "1wk": "2y",
+  "1mo": "5y",
 };
 
 async function requestYahooCandles(
@@ -318,11 +350,16 @@ async function loadYahooCandles(
   yahooSymbol: string,
   yahooInterval: string,
   yahooRange: string,
+  bypassCache: boolean = false,
 ): Promise<YahooChartResult> {
   const key = candlesKey(yahooSymbol, yahooInterval, yahooRange);
-  if (candleCache.has(key)) {
+  
+  // Bypass cache if requested (for live updates)
+  if (!bypassCache && candleCache.has(key)) {
     return candleCache.get(key)!;
   }
+  
+  // If there's already a pending request, wait for it
   if (candlePromises.has(key)) {
     return candlePromises.get(key)!;
   }
@@ -360,7 +397,8 @@ export function useYahooCandles(
 ) {
   const yahooSymbol = useMemo(() => convertSymbol(symbol), [symbol]);
   const yahooInterval = intervalMap[interval] || interval;
-  const yahooRange = rangeMap[interval] || range;
+  // Use the mapped interval to determine the range, fallback to provided range
+  const yahooRange = rangeMap[yahooInterval] || rangeMap[interval] || range;
   const [state, setState] = useState<CandleState>({
     data: null,
     isLoading: Boolean(enabled && symbol),
@@ -377,12 +415,30 @@ export function useYahooCandles(
 
   useEffect(() => {
     if (!enabled || !yahooSymbol) {
+      setState({
+        data: null,
+        isLoading: false,
+        error: null,
+      });
       return;
     }
 
     let cancelled = false;
+    const retryCountRef = { current: 0 };
+    const maxRetries = 3;
+    const retryDelay = 2000; // 2 seconds
 
-    async function fetchCandles() {
+    // Determine refresh interval based on timeframe - balance between live updates and performance
+    const getRefreshInterval = () => {
+      if (interval === "1m") return 5000; // 5 seconds for 1m (reduce flickering)
+      if (interval === "1h" || interval === "60m") return 10000; // 10 seconds for 1h
+      if (interval === "4h" || interval === "240") return 30000; // 30 seconds for 4h
+      return 60000; // 60 seconds for daily/weekly
+    };
+
+    async function fetchCandles(bypassCache: boolean = false) {
+      if (cancelled || !mountedRef.current) return;
+
       setState((prev) => ({
         ...prev,
         isLoading: true,
@@ -394,7 +450,17 @@ export function useYahooCandles(
           yahooSymbol,
           yahooInterval,
           yahooRange,
+          bypassCache, // Bypass cache for live updates
         );
+        
+        // Validate that we have actual data
+        if (!data?.chart?.result?.[0]?.indicators?.quote?.[0]) {
+          throw new Error("No chart data available");
+        }
+
+        // Reset retry count on success
+        retryCountRef.current = 0;
+
         if (!cancelled && mountedRef.current) {
           setState({
             data,
@@ -404,19 +470,41 @@ export function useYahooCandles(
         }
       } catch (error: any) {
         if (!cancelled && mountedRef.current) {
-          setState({
-            data: null,
-            isLoading: false,
-            error: error instanceof Error ? error : new Error(String(error)),
-          });
+          // Retry logic for transient errors
+          if (retryCountRef.current < maxRetries && error.message?.includes("Failed to fetch")) {
+            retryCountRef.current++;
+            setTimeout(() => {
+              if (!cancelled && mountedRef.current) {
+                fetchCandles(bypassCache);
+              }
+            }, retryDelay * retryCountRef.current);
+          } else {
+            retryCountRef.current = 0; // Reset for next attempt
+            setState({
+              data: null,
+              isLoading: false,
+              error: error instanceof Error ? error : new Error(String(error)),
+            });
+          }
         }
       }
     }
 
-    fetchCandles();
+    // Initial fetch with cache
+    fetchCandles(false);
+
+    // Set up auto-refetch with interval based on timeframe (bypass cache)
+    const refreshInterval = getRefreshInterval();
+    const refetchInterval = setInterval(() => {
+      if (!cancelled && mountedRef.current && enabled) {
+        retryCountRef.current = 0; // Reset retry count for periodic refresh
+        fetchCandles(true); // Bypass cache to get fresh data
+      }
+    }, refreshInterval);
 
     return () => {
       cancelled = true;
+      clearInterval(refetchInterval);
     };
   }, [enabled, yahooSymbol, yahooInterval, yahooRange]);
 

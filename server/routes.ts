@@ -4,7 +4,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { setupAuth, isAuthenticated } from "./replitAuth";
 import { setupEmailPasswordAuth, requireAuth } from "./auth";
-import { insertKycDocumentSchema, insertWalletSchema, insertTransactionSchema, insertOrderSchema, insertWatchlistSchema } from "@shared/schema";
+import { insertKycDocumentSchema, insertWalletSchema, insertTransactionSchema, insertOrderSchema, insertWatchlistSchema, orders } from "@shared/schema";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
@@ -331,6 +333,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/wallet/summary', authMiddleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+      const wallet = await storage.getWalletByUser(userId);
+      
+      if (!wallet) {
+        return res.json({
+          totalBalance: 0,
+          inOrders: 0,
+          totalDeposits: 0,
+        });
+      }
+
+      const cashBalance = parseFloat(wallet.balance) || 0;
+      
+      // Get open orders to calculate locked amount (pending orders that haven't been filled)
+      const orders = await storage.getOrdersByUser(userId);
+      const openOrders = orders.filter(o => o.status === "pending" || o.status === "open");
+      const inOrders = openOrders.reduce((sum, order) => {
+        // For pending orders, calculate based on order price and quantity
+        const price = parseFloat(order.price || order.averagePrice || "0");
+        const quantity = parseFloat(order.quantity || "0");
+        const orderValue = price * quantity;
+        return sum + orderValue;
+      }, 0);
+      
+      // Get all transactions to calculate total deposits
+      const transactions = await storage.getTransactionsByWallet(wallet.id);
+      const deposits = transactions.filter(tx => tx.type === "deposit" && tx.status === "completed");
+      const totalDeposits = deposits.reduce((sum, tx) => {
+        return sum + (parseFloat(tx.amount) || 0);
+      }, 0);
+      
+      res.json({
+        totalBalance: cashBalance,
+        inOrders,
+        totalDeposits,
+      });
+    } catch (error: any) {
+      console.error('Error fetching wallet summary:', error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
   app.get('/api/wallet/ledger', authMiddleware, async (req: any, res) => {
     try {
       const userId = req.userId;
@@ -483,17 +529,313 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Helper function to get current price from Yahoo Finance
+  async function getCurrentPrice(symbol: string): Promise<number> {
+    try {
+      const yahooSymbol = symbol.replace('/', '-');
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d&includePrePost=false`;
+      const response = await fetch(url);
+      const data = await response.json();
+      const result = data.chart.result?.[0];
+      const meta = result?.meta;
+      if (!meta || typeof meta.regularMarketPrice !== "number") {
+        throw new Error("Unable to fetch current price");
+      }
+      return meta.regularMarketPrice;
+    } catch (error) {
+      throw new Error(`Failed to get current price for ${symbol}`);
+    }
+  }
+
   app.post('/api/trade/place-order', authMiddleware, async (req: any, res) => {
     try {
       const userId = req.userId;
-      const parsed = insertOrderSchema.parse({
-        ...req.body,
+      const orderData = req.body;
+      
+      console.log("Place order request received:", {
         userId,
+        orderData: {
+          symbol: orderData.symbol,
+          side: orderData.side,
+          type: orderData.type,
+          quantity: orderData.quantity,
+          price: orderData.price,
+        },
       });
+      
+      // Validate required fields
+      if (!orderData.symbol || !orderData.side || !orderData.type || !orderData.quantity) {
+        return res.status(400).json({ 
+          message: "Missing required fields: symbol, side, type, and quantity are required" 
+        });
+      }
+      
+      // Get user's wallet
+      let wallet = await storage.getWalletByUser(userId);
+      if (!wallet) {
+        console.log("Wallet not found, creating new wallet for user:", userId);
+        // Create wallet if it doesn't exist
+        wallet = await storage.createWallet({
+          userId,
+          balance: "10000", // Default starting balance
+          currency: "USD",
+        });
+        console.log("Wallet created:", { id: wallet.id, balance: wallet.balance });
+      } else {
+        console.log("Wallet found:", { id: wallet.id, balance: wallet.balance });
+      }
+      
+      // For market orders, execute immediately at current price
+      let executedPrice = orderData.price ? parseFloat(orderData.price) : null;
+      if (orderData.type === "market") {
+        console.log("Fetching current price for market order:", orderData.symbol);
+        executedPrice = await getCurrentPrice(orderData.symbol);
+        console.log("Current price fetched:", executedPrice);
+      }
+      
+      if (!executedPrice && !orderData.price) {
+        return res.status(400).json({ 
+          message: "Price is required for limit orders, or unable to fetch current price for market orders" 
+        });
+      }
+      
+      const quantity = parseFloat(orderData.quantity);
+      if (isNaN(quantity) || quantity <= 0) {
+        return res.status(400).json({ 
+          message: "Invalid quantity. Quantity must be a positive number" 
+        });
+      }
+      
+      const finalPrice = executedPrice || parseFloat(orderData.price);
+      const totalCost = finalPrice * quantity;
+      
+      console.log("Order calculation:", {
+        quantity,
+        price: finalPrice,
+        totalCost,
+        side: orderData.side,
+      });
+      
+      // For buy orders, check and deduct wallet balance
+      if (orderData.side === "buy") {
+        const currentBalance = parseFloat(wallet.balance);
+        console.log("Buy order - checking balance:", {
+          currentBalance,
+          totalCost,
+          sufficient: currentBalance >= totalCost,
+        });
+        
+        if (currentBalance < totalCost) {
+          return res.status(400).json({ 
+            message: `Insufficient balance. Required: $${totalCost.toFixed(2)}, Available: $${currentBalance.toFixed(2)}` 
+          });
+        }
+        
+        // Deduct money from wallet
+        const newBalance = (currentBalance - totalCost).toString();
+        console.log("Updating wallet balance:", {
+          oldBalance: currentBalance,
+          newBalance: parseFloat(newBalance),
+          deduction: totalCost,
+        });
+        
+        const updatedWallet = await storage.updateWalletBalance(userId, newBalance);
+        console.log("Wallet balance updated:", {
+          id: updatedWallet.id,
+          balance: updatedWallet.balance,
+        });
+        
+        // Create transaction record
+        try {
+          const transaction = await storage.createTransaction({
+            walletId: wallet.id,
+            type: "withdrawal", // Using withdrawal type for buy orders (money going out)
+            amount: totalCost.toString(),
+            method: "trading",
+            status: "completed",
+          });
+          console.log("Transaction created:", {
+            id: transaction.id,
+            type: transaction.type,
+            amount: transaction.amount,
+          });
+        } catch (txError: any) {
+          console.error("Error creating transaction:", txError);
+          // Don't fail the order if transaction creation fails, but log it
+        }
+      }
+      
+      // Prepare order data
+      const orderPayload: any = {
+        userId,
+        symbol: orderData.symbol,
+        assetType: orderData.assetType || "stock",
+        type: orderData.type,
+        side: orderData.side,
+        quantity: quantity.toString(),
+        price: finalPrice.toString(),
+        averagePrice: finalPrice.toString(),
+        filledQuantity: orderData.type === "market" ? quantity.toString() : "0",
+        status: orderData.type === "market" ? "filled" : "pending",
+        stopPrice: orderData.stopPrice ? orderData.stopPrice.toString() : null,
+        timeframe: orderData.timeframe || null,
+      };
+      
+      console.log("Order payload prepared:", orderPayload);
+      
+      // Validate order payload
+      const parsed = insertOrderSchema.parse(orderPayload);
+      console.log("Order payload validated:", parsed);
+      
+      // Create order in database
       const order = await storage.createOrder(parsed);
+      console.log("Order created successfully in database:", {
+        id: order.id,
+        symbol: order.symbol,
+        side: order.side,
+        status: order.status,
+        quantity: order.quantity,
+        price: order.price,
+        averagePrice: order.averagePrice,
+      });
+      
       res.json(order);
     } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      console.error("Error placing order:", {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+      });
+      
+      // Provide more detailed error messages
+      if (error.name === "ZodError") {
+        return res.status(400).json({ 
+          message: "Invalid order data",
+          errors: error.errors 
+        });
+      }
+      
+      res.status(400).json({ 
+        message: error.message || "Failed to place order",
+        error: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
+    }
+  });
+
+  // Close a trade and calculate P&L
+  app.post('/api/trade/close-order', authMiddleware, async (req: any, res) => {
+    try {
+      const { orderId } = req.body;
+      const userId = req.userId;
+      
+      console.log("Close order request received:", { orderId, userId });
+      
+      // Get the order
+      const userOrders = await storage.getOrdersByUser(userId);
+      const order = userOrders.find(o => o.id === orderId);
+      
+      if (!order) {
+        return res.status(404).json({ message: "Order not found" });
+      }
+      
+      if (order.status !== "filled") {
+        return res.status(400).json({ message: `Order is not filled. Current status: ${order.status}` });
+      }
+      
+      // Get current price
+      console.log("Fetching current price for close:", order.symbol);
+      const closePrice = await getCurrentPrice(order.symbol);
+      console.log("Current price fetched:", closePrice);
+      
+      const entryPrice = parseFloat(order.averagePrice || order.price || "0");
+      const quantity = parseFloat(order.quantity);
+      
+      // Calculate P&L
+      let profitLoss = 0;
+      if (order.side === "buy") {
+        profitLoss = (closePrice - entryPrice) * quantity;
+      } else {
+        profitLoss = (entryPrice - closePrice) * quantity;
+      }
+      
+      const profitLossPercent = entryPrice > 0 ? (profitLoss / (entryPrice * quantity)) * 100 : 0;
+      
+      console.log("P&L calculation:", {
+        entryPrice,
+        closePrice,
+        quantity,
+        profitLoss,
+        profitLossPercent,
+      });
+      
+      // Get wallet for balance update
+      const wallet = await storage.getWalletByUser(userId);
+      if (!wallet) {
+        return res.status(404).json({ message: "Wallet not found" });
+      }
+      
+      // For buy orders, add money back when closing (selling)
+      if (order.side === "buy") {
+        const currentBalance = parseFloat(wallet.balance);
+        const totalReturn = closePrice * quantity; // Money from selling
+        const newBalance = (currentBalance + totalReturn).toString();
+        
+        console.log("Updating wallet balance on close:", {
+          oldBalance: currentBalance,
+          newBalance: parseFloat(newBalance),
+          addition: totalReturn,
+        });
+        
+        await storage.updateWalletBalance(userId, newBalance);
+        
+        // Create transaction record for the sale
+        try {
+          const transaction = await storage.createTransaction({
+            walletId: wallet.id,
+            type: "deposit", // Using deposit type for sell orders (money coming in)
+            amount: totalReturn.toString(),
+            method: "trading",
+            status: "completed",
+          });
+          console.log("Transaction created for close:", {
+            id: transaction.id,
+            type: transaction.type,
+            amount: transaction.amount,
+          });
+        } catch (txError: any) {
+          console.error("Error creating transaction for close:", txError);
+          // Don't fail the order if transaction creation fails, but log it
+        }
+      }
+      
+      // Update order with close information
+      const updatedOrder = await storage.updateOrder(orderId, {
+        status: "closed",
+        closePrice: closePrice.toString(),
+        profitLoss: profitLoss.toString(),
+        profitLossPercent: profitLossPercent.toString(),
+        closedAt: new Date(),
+      });
+      
+      console.log("Order closed successfully:", {
+        id: updatedOrder.id,
+        symbol: updatedOrder.symbol,
+        profitLoss: updatedOrder.profitLoss,
+        profitLossPercent: updatedOrder.profitLossPercent,
+        status: updatedOrder.status,
+      });
+      
+      res.json(updatedOrder);
+    } catch (error: any) {
+      console.error("Error closing order:", {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+      });
+      res.status(400).json({ 
+        message: error.message || "Failed to close order",
+        error: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      });
     }
   });
 
@@ -519,9 +861,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/trade/trades', authMiddleware, async (req: any, res) => {
     try {
       const userId = req.userId;
-      const orders = await storage.getOrdersByUser(userId);
-      const completedTrades = orders.filter(o => o.status === "filled");
-      res.json(completedTrades);
+      const userOrders = await storage.getOrdersByUser(userId);
+      // Return all trades (open and closed)
+      res.json(userOrders);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  // Get open positions (filled but not closed trades)
+  app.get('/api/trade/open-positions', authMiddleware, async (req: any, res) => {
+    try {
+      const userId = req.userId;
+      const userOrders = await storage.getOrdersByUser(userId);
+      // Return only filled but not closed trades (open positions)
+      const openPositions = userOrders.filter(o => o.status === "filled" && o.side === "buy");
+      res.json(openPositions);
     } catch (error: any) {
       res.status(500).json({ message: error.message });
     }
@@ -544,6 +899,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get wallet balance (cash)
       let wallet = await storage.getWalletByUser(userId);
       if (!wallet) {
+        // Create wallet with $0 balance for new users (no demo data)
         wallet = await storage.createWallet({
           userId,
           balance: "0",
@@ -552,8 +908,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const cashBalance = parseFloat(wallet.balance) || 0;
       
-      // Get holdings to calculate portfolio value and P&L
+      // Get all orders to calculate realized P&L from closed trades
+      const allOrders = await storage.getOrdersByUser(userId);
+      
+      // Calculate realized P&L from closed trades
+      let realizedPnl = 0;
+      let totalRealizedPnl = 0;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      for (const order of allOrders) {
+        if (order.status === "closed" && order.profitLoss) {
+          const pnl = parseFloat(order.profitLoss);
+          if (!isNaN(pnl)) {
+            totalRealizedPnl += pnl;
+            
+            // Check if closed today for today's P&L
+            if (order.closedAt) {
+              const closedDate = new Date(order.closedAt);
+              closedDate.setHours(0, 0, 0, 0);
+              if (closedDate.getTime() === today.getTime()) {
+                realizedPnl += pnl;
+              }
+            }
+          }
+        }
+      }
+      
+      // Get holdings to calculate portfolio value and unrealized P&L
       const holdings = await storage.getHoldingsByUser(userId);
+      
+      // Also get open positions (filled but not closed orders)
+      const openOrders = allOrders.filter(o => o.status === "filled" && !o.closedAt && o.side === "buy");
       
       // Calculate holdings market value and unrealized P&L
       let holdingsMarketValue = 0;
@@ -584,30 +970,78 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
+      // Calculate unrealized P&L from open orders (filled but not closed)
+      // These are buy orders that haven't been closed yet
+      for (const order of openOrders) {
+        try {
+          const quantity = parseFloat(order.quantity);
+          if (isNaN(quantity) || quantity <= 0) continue;
+          
+          const entryPrice = parseFloat(order.averagePrice || order.price || "0");
+          if (isNaN(entryPrice) || entryPrice <= 0) continue;
+          
+          // Fetch current price for this symbol
+          const currentPrice = await getCurrentPrice(order.symbol);
+          
+          if (!isNaN(currentPrice) && currentPrice > 0) {
+            const marketValue = quantity * currentPrice;
+            const costBasis = quantity * entryPrice;
+            const pnl = marketValue - costBasis;
+            
+            holdingsMarketValue += marketValue;
+            unrealizedPnl += pnl;
+            openPositions++;
+            
+            if (currentPrice > entryPrice) {
+              profitablePositions++;
+            }
+          }
+        } catch (error: any) {
+          // If we can't get current price, use entry price as fallback (no unrealized P&L)
+          console.warn(`Failed to get current price for ${order.symbol}:`, error.message);
+          const quantity = parseFloat(order.quantity);
+          const entryPrice = parseFloat(order.averagePrice || order.price || "0");
+          if (!isNaN(quantity) && !isNaN(entryPrice) && quantity > 0 && entryPrice > 0) {
+            holdingsMarketValue += quantity * entryPrice; // Use entry price as fallback
+            openPositions++;
+          }
+        }
+      }
+      
       // Total portfolio value = cash + holdings market value
       const totalBalance = cashBalance + holdingsMarketValue;
       
-      // For simplicity, we'll show unrealized P&L as today's P&L
-      // In a real app, you'd track beginning-of-day portfolio value
-      const todaysPnl = unrealizedPnl;
+      // Total P&L = realized P&L (from closed trades) + unrealized P&L (from open positions)
+      const totalPnl = totalRealizedPnl + unrealizedPnl;
       
-      // Calculate percentage change, guarding against division by zero
-      const costBasis = totalBalance - unrealizedPnl;
+      // Today's P&L = realized P&L from today's closed trades + unrealized P&L
+      const todaysPnl = realizedPnl + unrealizedPnl;
+      
+      // Calculate percentage change
+      const costBasis = totalBalance - totalPnl;
       let todaysPnlPercent = 0;
+      let totalPnlPercent = 0;
+      
       if (costBasis > 0) {
-        // Normal case: positive cost basis
-        todaysPnlPercent = (unrealizedPnl / costBasis) * 100;
+        totalPnlPercent = (totalPnl / costBasis) * 100;
+        todaysPnlPercent = (todaysPnl / costBasis) * 100;
       } else if (costBasis === 0) {
-        // Zero cost basis (free assets): clamp to ±100%
-        todaysPnlPercent = unrealizedPnl > 0 ? 100 : unrealizedPnl < 0 ? -100 : 0;
+        totalPnlPercent = totalPnl > 0 ? 100 : totalPnl < 0 ? -100 : 0;
+        todaysPnlPercent = todaysPnl > 0 ? 100 : todaysPnl < 0 ? -100 : 0;
       } else {
-        // Negative cost basis (e.g., negative cash balance): use absolute value to preserve sign
-        todaysPnlPercent = (unrealizedPnl / Math.abs(costBasis)) * 100;
+        totalPnlPercent = (totalPnl / Math.abs(costBasis)) * 100;
+        todaysPnlPercent = (todaysPnl / Math.abs(costBasis)) * 100;
       }
       
-      // Calculate balance change (same as P&L for now)
-      const balanceChange = unrealizedPnl;
-      const balanceChangePercent = todaysPnlPercent;
+      // Calculate balance change - compare current total balance to initial deposits
+      // Initial balance would be total deposits, so change = current balance - deposits
+      const transactions = await storage.getTransactionsByWallet(wallet.id);
+      const deposits = transactions.filter(tx => tx.type === "deposit" && tx.status === "completed");
+      const totalDeposits = deposits.reduce((sum, tx) => sum + (parseFloat(tx.amount) || 0), 0);
+      
+      // Balance change = current total balance - total deposits
+      const balanceChange = totalBalance - totalDeposits;
+      const balanceChangePercent = totalDeposits > 0 ? (balanceChange / totalDeposits) * 100 : 0;
       
       res.json({
         totalBalance,
@@ -615,6 +1049,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         balanceChangePercent,
         todaysPnl,
         todaysPnlPercent,
+        totalPnl,
+        totalPnlPercent,
+        realizedPnl: totalRealizedPnl,
         openPositions,
         profitablePositions,
         holdingsValue: holdingsMarketValue,

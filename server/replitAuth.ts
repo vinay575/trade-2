@@ -29,12 +29,28 @@ export function getSession() {
   if (useDatabaseSessions) {
     const PgSessionStore = connectPgSimple(session);
     
-    sessionStore = new PgSessionStore({
-      conString: process.env.DATABASE_URL!,
-      tableName: "sessions",
-      ttl: sessionTtl / 1000, // convert to seconds
-      createTableIfMissing: false, // Sessions table already exists in schema
-    });
+    try {
+      sessionStore = new PgSessionStore({
+        conString: process.env.DATABASE_URL!,
+        tableName: "sessions",
+        ttl: sessionTtl / 1000, // convert to seconds
+        createTableIfMissing: false, // Sessions table already exists in schema
+      });
+      
+      // Handle session store errors gracefully
+      if (sessionStore && typeof (sessionStore as any).on === 'function') {
+        (sessionStore as any).on('error', (err: Error) => {
+          console.error('[Session] Store error (non-fatal):', err.message);
+          // Don't crash the app on session store errors
+        });
+      }
+    } catch (error: any) {
+      console.error('[Session] Failed to initialize session store, falling back to memory store:', error.message);
+      const MemStore = MemoryStore(session);
+      sessionStore = new MemStore({
+        checkPeriod: sessionTtl,
+      });
+    }
   } else {
     const MemStore = MemoryStore(session);
     sessionStore = new MemStore({

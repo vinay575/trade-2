@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { useYahooQuote } from "@/hooks/useYahooFinance";
 import { GlassCard } from "@/components/GlassCard";
 import { TickerCard } from "@/components/TickerCard";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,48 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Grid3x3, List, Star, Plus } from "lucide-react";
+
+// Component to render live ticker card with auto-refresh
+function LiveTickerCard({ symbol, name, assetType }: { symbol: string; name: string; assetType: "crypto" | "stock" | "forex" }) {
+  // Enable auto-refresh for live updates (every 5 seconds)
+  const { data: quote, isLoading } = useYahooQuote(symbol, true, true);
+
+  if (isLoading || !quote) {
+    return (
+      <GlassCard className="p-4 hover-elevate" neonBorder>
+        <div className="space-y-3">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-condensed font-semibold text-lg">{symbol}</h3>
+                <Badge variant="secondary" className="text-xs">{assetType.toUpperCase()}</Badge>
+              </div>
+              <p className="text-sm text-muted-foreground">{name}</p>
+            </div>
+          </div>
+          <div className="h-16 flex items-center justify-center">
+            <div className="animate-pulse text-muted-foreground text-sm">Loading...</div>
+          </div>
+        </div>
+      </GlassCard>
+    );
+  }
+
+  const change = quote.regularMarketChange ?? 0;
+  const changePercent = quote.regularMarketChangePercent ?? 0;
+  const price = quote.regularMarketPrice ?? 0;
+
+  return (
+    <TickerCard
+      symbol={symbol}
+      name={name}
+      price={price}
+      change={change}
+      changePercent={changePercent}
+      assetType={assetType}
+    />
+  );
+}
 
 export default function MarketWatch() {
   const { toast } = useToast();
@@ -29,20 +72,21 @@ export default function MarketWatch() {
     }
   }, [isAuthenticated, isLoading]); // Removed toast from dependencies
 
-  const mockAssets = [
-    { symbol: "BTC/USD", name: "Bitcoin", price: 67234.50, change: 1234.50, changePercent: 1.87, volume: "$34.2B", assetType: "crypto" as const },
-    { symbol: "ETH/USD", name: "Ethereum", price: 3567.89, change: -45.23, changePercent: -1.25, volume: "$18.5B", assetType: "crypto" as const },
-    { symbol: "SOL/USD", name: "Solana", price: 142.67, change: 5.34, changePercent: 3.89, volume: "$2.1B", assetType: "crypto" as const },
-    { symbol: "AAPL", name: "Apple Inc.", price: 178.34, change: 2.45, changePercent: 1.39, volume: "$58.3M", assetType: "stock" as const },
-    { symbol: "GOOGL", name: "Alphabet Inc.", price: 145.23, change: -1.23, changePercent: -0.84, volume: "$42.1M", assetType: "stock" as const },
-    { symbol: "MSFT", name: "Microsoft Corp.", price: 412.56, change: 8.92, changePercent: 2.21, volume: "$51.2M", assetType: "stock" as const },
-    { symbol: "EUR/USD", name: "Euro/Dollar", price: 1.0876, change: 0.0023, changePercent: 0.21, volume: "$112B", assetType: "forex" as const },
-    { symbol: "GBP/USD", name: "Pound/Dollar", price: 1.2634, change: -0.0012, changePercent: -0.09, volume: "$78B", assetType: "forex" as const },
+  // Define watchlist assets with their symbols
+  const watchlistAssets = [
+    { symbol: "BTC-USD", name: "Bitcoin", assetType: "crypto" as const },
+    { symbol: "ETH-USD", name: "Ethereum", assetType: "crypto" as const },
+    { symbol: "SOL-USD", name: "Solana", assetType: "crypto" as const },
+    { symbol: "AAPL", name: "Apple Inc.", assetType: "stock" as const },
+    { symbol: "GOOGL", name: "Alphabet Inc.", assetType: "stock" as const },
+    { symbol: "MSFT", name: "Microsoft Corp.", assetType: "stock" as const },
+    { symbol: "EURUSD=X", name: "Euro/Dollar", assetType: "forex" as const },
+    { symbol: "GBPUSD=X", name: "Pound/Dollar", assetType: "forex" as const },
   ];
 
   const filteredAssets = selectedType === "all"
-    ? mockAssets
-    : mockAssets.filter(asset => asset.assetType === selectedType);
+    ? watchlistAssets
+    : watchlistAssets.filter(asset => asset.assetType === selectedType);
 
   if (isLoading) {
     return (
@@ -115,7 +159,7 @@ export default function MarketWatch() {
         <TabsContent value="watchlist" className="mt-6">
           <div className={view === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" : "space-y-3"}>
             {filteredAssets.slice(0, 6).map((asset) => (
-              <TickerCard key={asset.symbol} {...asset} />
+              <LiveTickerCard key={asset.symbol} symbol={asset.symbol} name={asset.name} assetType={asset.assetType} />
             ))}
           </div>
           <Button variant="outline" className="w-full mt-4 gap-2" data-testid="button-add-to-watchlist">
@@ -127,7 +171,7 @@ export default function MarketWatch() {
         <TabsContent value="all" className="mt-6">
           <div className={view === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" : "space-y-3"}>
             {filteredAssets.map((asset) => (
-              <TickerCard key={asset.symbol} {...asset} />
+              <LiveTickerCard key={asset.symbol} symbol={asset.symbol} name={asset.name} assetType={asset.assetType} />
             ))}
           </div>
         </TabsContent>

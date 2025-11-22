@@ -9,22 +9,97 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Download, PieChart } from "lucide-react";
+import { useYahooQuote } from "@/hooks/useYahooFinance";
 import type { Holding } from "@shared/schema";
+
+// Component for individual holding row with live price updates
+function HoldingRow({ holding }: { holding: Holding }) {
+  const { data: quote } = useYahooQuote(holding.symbol, true, true);
+  
+  const qty = parseFloat(holding.quantity || "0");
+  const avgPrice = parseFloat(holding.averageBuyPrice || "0");
+  // Use live quote price if available, otherwise use stored currentPrice or avgPrice
+  const livePrice = quote?.regularMarketPrice && quote.regularMarketPrice > 0 
+    ? quote.regularMarketPrice 
+    : parseFloat(holding.currentPrice || holding.averageBuyPrice || "0");
+  const currentPrice = livePrice;
+  const value = qty * currentPrice;
+  const cost = qty * avgPrice;
+  const pnl = value - cost;
+  const pnlPercent = cost > 0 ? (pnl / cost) * 100 : 0;
+
+  return (
+    <TableRow key={holding.id} data-testid={`holding-row-${holding.symbol}`}>
+      <TableCell>
+        <div>
+          <div className="font-medium">{holding.symbol}</div>
+          <div className="text-xs text-muted-foreground">{holding.assetName || holding.symbol}</div>
+        </div>
+      </TableCell>
+      <TableCell className="text-right font-mono">{qty.toFixed(4)}</TableCell>
+      <TableCell className="text-right font-mono">${avgPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+      <TableCell className="text-right font-mono">
+        ${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        {quote?.regularMarketPrice && <span className="text-xs text-muted-foreground ml-1">(live)</span>}
+      </TableCell>
+      <TableCell className="text-right font-mono">${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+      <TableCell className="text-right">
+        <div className={pnl >= 0 ? "text-gain" : "text-loss"}>
+          <div className="font-mono">{pnl >= 0 ? '+' : ''}${Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          <div className="text-xs">({pnlPercent >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)</div>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
 
 export default function Portfolio() {
   const { toast } = useToast();
   const { isAuthenticated, isLoading } = useAuth();
 
-  // Fetch real holdings from API
+  // Fetch real holdings from API - refresh every 3 seconds for live updates
   const { data: holdings = [], isLoading: isLoadingHoldings } = useQuery<Holding[]>({
     queryKey: ["/api/portfolio/holdings"],
     enabled: isAuthenticated,
+    refetchInterval: 3000, // Refresh every 3 seconds for live trading
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
-  // Fetch real wallet transactions from API
+  // Fetch portfolio summary for accurate Total P&L (includes realized + unrealized)
+  const { data: portfolioSummary } = useQuery<any>({
+    queryKey: ["/api/portfolio/summary"],
+    enabled: isAuthenticated,
+    refetchInterval: 3000, // Refresh every 3 seconds for live updates
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch("/api/portfolio/summary", {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("Failed to fetch portfolio summary");
+      }
+      return res.json();
+    },
+  });
+
+  // Fetch real wallet transactions from API - refresh periodically
   const { data: transactions = [], isLoading: isLoadingTransactions } = useQuery<any[]>({
     queryKey: ["/api/wallet/ledger"],
     enabled: isAuthenticated,
+    refetchInterval: 5000, // Refresh every 5 seconds
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch("/api/wallet/ledger", {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        throw new Error("Failed to fetch transactions");
+      }
+      return res.json();
+    },
   });
 
   useEffect(() => {
@@ -41,8 +116,23 @@ export default function Portfolio() {
     }
   }, [isAuthenticated, isLoading]); // Removed toast from dependencies
 
-  // Calculate totals from real data
+  // Calculate totals from real data - use portfolio summary if available, otherwise calculate from holdings
   const portfolioStats = useMemo(() => {
+    // If we have portfolio summary, use it for more accurate data
+    if (portfolioSummary) {
+      return {
+        totalValue: portfolioSummary.totalBalance || 0,
+        totalPnl: portfolioSummary.totalPnl || 0,
+        totalPnlPercent: portfolioSummary.totalPnlPercent || 0,
+        totalAssets: portfolioSummary.openPositions || holdings.length || 0,
+        assetClasses: new Set(holdings.map(h => {
+          const symbol = h.symbol.toUpperCase();
+          return symbol.includes('-USD') ? 'crypto' : 'stock';
+        })).size,
+      };
+    }
+
+    // Fallback to calculating from holdings
     if (!holdings || holdings.length === 0) {
       return {
         totalValue: 0,
@@ -81,7 +171,7 @@ export default function Portfolio() {
       totalAssets: holdings.length,
       assetClasses: assetTypes.size,
     };
-  }, [holdings]);
+  }, [holdings, portfolioSummary]); // Include portfolioSummary in dependencies
 
   if (isLoading || isLoadingHoldings) {
     return (
@@ -122,13 +212,13 @@ export default function Portfolio() {
         <GlassCard className="p-6">
           <h3 className="text-sm font-medium text-muted-foreground mb-2">Total P&L</h3>
           <div 
-            className={`text-3xl font-condensed font-bold mb-2 ${portfolioStats.totalPnl >= 0 ? 'text-gain' : 'text-loss'}`} 
+            className={`text-3xl font-condensed font-bold mb-2 ${(portfolioSummary?.totalPnl || portfolioStats.totalPnl) >= 0 ? 'text-gain' : 'text-loss'}`} 
             data-testid="text-total-pnl"
           >
-            {portfolioStats.totalPnl >= 0 ? '+' : ''}${portfolioStats.totalPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {(portfolioSummary?.totalPnl || portfolioStats.totalPnl) >= 0 ? '+' : ''}${(portfolioSummary?.totalPnl || portfolioStats.totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div className="text-sm text-muted-foreground">
-            {portfolioStats.totalPnlPercent >= 0 ? '+' : ''}{portfolioStats.totalPnlPercent.toFixed(2)}% all time
+            {(portfolioSummary?.totalPnlPercent || portfolioStats.totalPnlPercent) >= 0 ? '+' : ''}{(portfolioSummary?.totalPnlPercent || portfolioStats.totalPnlPercent).toFixed(2)}% all time
           </div>
         </GlassCard>
 
@@ -170,34 +260,7 @@ export default function Portfolio() {
                     </TableRow>
                   ) : (
                     holdings.map((holding) => {
-                      const qty = parseFloat(holding.quantity || "0");
-                      const avgPrice = parseFloat(holding.averageBuyPrice || "0");
-                      const currentPrice = parseFloat(holding.currentPrice || holding.averageBuyPrice || "0");
-                      const value = qty * currentPrice;
-                      const cost = qty * avgPrice;
-                      const pnl = value - cost;
-                      const pnlPercent = cost > 0 ? (pnl / cost) * 100 : 0;
-
-                      return (
-                        <TableRow key={holding.id} data-testid={`holding-row-${holding.symbol}`}>
-                          <TableCell>
-                            <div>
-                              <div className="font-medium">{holding.symbol}</div>
-                              <div className="text-xs text-muted-foreground">{holding.assetName || holding.symbol}</div>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-right font-mono">{qty.toFixed(4)}</TableCell>
-                          <TableCell className="text-right font-mono">${avgPrice.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-mono">${currentPrice.toLocaleString()}</TableCell>
-                          <TableCell className="text-right font-mono">${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
-                          <TableCell className="text-right">
-                            <div className={pnl >= 0 ? "text-gain" : "text-loss"}>
-                              <div className="font-mono">{pnl >= 0 ? '+' : ''}${Math.abs(pnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                              <div className="text-xs">({pnlPercent >= 0 ? "+" : ""}{pnlPercent.toFixed(2)}%)</div>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      );
+                      return <HoldingRow key={holding.id} holding={holding} />;
                     })
                   )}
                 </TableBody>
@@ -296,14 +359,14 @@ export default function Portfolio() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Total P&L</span>
-                <span className={portfolioStats.totalPnl >= 0 ? "text-gain" : "text-loss"}>
-                  {portfolioStats.totalPnl >= 0 ? '+' : ''}${portfolioStats.totalPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <span className={(portfolioSummary?.totalPnl || portfolioStats.totalPnl) >= 0 ? "text-gain" : "text-loss"}>
+                  {(portfolioSummary?.totalPnl || portfolioStats.totalPnl) >= 0 ? '+' : ''}${(portfolioSummary?.totalPnl || portfolioStats.totalPnl).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Total Return</span>
-                <span className={portfolioStats.totalPnlPercent >= 0 ? "text-gain" : "text-loss"}>
-                  {portfolioStats.totalPnlPercent >= 0 ? '+' : ''}{portfolioStats.totalPnlPercent.toFixed(2)}%
+                <span className={(portfolioSummary?.totalPnlPercent || portfolioStats.totalPnlPercent) >= 0 ? "text-gain" : "text-loss"}>
+                  {(portfolioSummary?.totalPnlPercent || portfolioStats.totalPnlPercent) >= 0 ? '+' : ''}{(portfolioSummary?.totalPnlPercent || portfolioStats.totalPnlPercent).toFixed(2)}%
                 </span>
               </div>
               <div className="flex justify-between">

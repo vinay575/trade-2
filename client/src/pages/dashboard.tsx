@@ -1,16 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { GlassCard } from "@/components/GlassCard";
 import { PriceDisplay } from "@/components/PriceDisplay";
 import { MarketChart } from "@/components/MarketChart";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Wallet, TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Sparkles } from "lucide-react";
+import { Wallet, TrendingUp, ArrowUpRight, ArrowDownRight, Newspaper, Sparkles, X, Loader2 } from "lucide-react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { useYahooQuote } from "@/hooks/useYahooFinance";
 
 interface PortfolioSummary {
   totalBalance: number;
@@ -25,18 +26,258 @@ interface PortfolioSummary {
   unrealizedPnl: number;
 }
 
+// Component for displaying open position card
+function OpenPositionCard({ position, onClose }: { position: any; onClose: () => void }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data: quote, isLoading: isLoadingQuote, error: quoteError } = useYahooQuote(position.symbol, true, true);
+  const [isSelling, setIsSelling] = useState(false);
+  const [lastQuoteUpdate, setLastQuoteUpdate] = useState<Date | null>(null);
+  const [fallbackPrice, setFallbackPrice] = useState<number | null>(null);
+
+  // Track when quote updates
+  useEffect(() => {
+    if (quote && quote.regularMarketPrice) {
+      setLastQuoteUpdate(new Date());
+      setFallbackPrice(null); // Clear fallback when quote loads
+    }
+  }, [quote]);
+
+  // Fallback: Fetch price from backend if quote fails after 3 seconds
+  useEffect(() => {
+    if (quoteError && !quote && !fallbackPrice) {
+      const timeoutId = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/yahoo/quote/${position.symbol}`);
+          if (res.ok) {
+            const data = await res.json();
+            const price = data.chart?.result?.[0]?.meta?.regularMarketPrice;
+            if (price && price > 0) {
+              setFallbackPrice(price);
+            }
+          }
+        } catch (error) {
+          console.error(`Failed to fetch fallback price for ${position.symbol}:`, error);
+        }
+      }, 3000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [quoteError, quote, position.symbol, fallbackPrice]);
+
+  const entryPrice = parseFloat(position.averagePrice || position.price || "0");
+  const quantity = parseFloat(position.quantity);
+  
+  // Use quote price, fallback price, or entry price in that order
+  const hasValidQuote = quote && quote.regularMarketPrice && quote.regularMarketPrice > 0 && !isNaN(quote.regularMarketPrice);
+  const hasFallbackPrice = fallbackPrice && fallbackPrice > 0 && !isNaN(fallbackPrice);
+  const currentPrice = hasValidQuote 
+    ? quote.regularMarketPrice 
+    : hasFallbackPrice 
+    ? fallbackPrice 
+    : entryPrice;
+  
+  // Calculate unrealized P&L - use current price if we have quote or fallback
+  const hasValidPrice = hasValidQuote || hasFallbackPrice;
+  const unrealizedPnL = hasValidPrice ? (currentPrice - entryPrice) * quantity : 0;
+  const unrealizedPnLPercent = hasValidPrice && entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+  const isProfit = unrealizedPnL >= 0;
+
+  // Debug logging - log more details
+  useEffect(() => {
+    console.log(`[${position.symbol}] Position data:`, {
+      entryPrice,
+      currentPrice,
+      quotePrice: quote?.regularMarketPrice,
+      fallbackPrice,
+      hasValidQuote,
+      hasFallbackPrice,
+      hasValidPrice,
+      isLoadingQuote,
+      quoteError: quoteError?.message,
+      unrealizedPnL,
+      unrealizedPnLPercent,
+    });
+  }, [quote, position.symbol, entryPrice, currentPrice, fallbackPrice, hasValidQuote, hasFallbackPrice, hasValidPrice, isLoadingQuote, quoteError, unrealizedPnL, unrealizedPnLPercent]);
+
+  const handleSell = async () => {
+    setIsSelling(true);
+    try {
+      // Create sell order
+      const sellOrder = {
+        symbol: position.symbol,
+        assetType: position.assetType,
+        type: "market",
+        side: "sell",
+        quantity: position.quantity,
+        price: null,
+        timeframe: null,
+      };
+
+      const response = await fetch("/api/trade/place-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify(sellOrder),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Failed to sell");
+      }
+
+      // Close the original buy order
+      await fetch("/api/trade/close-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ orderId: position.id }),
+      });
+
+      toast({
+        title: "Position Sold",
+        description: `Sold ${quantity} ${position.symbol} at $${currentPrice.toFixed(2)}`,
+      });
+
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ['/api/trade/open-positions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/trade/trades'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/portfolio/summary'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/wallet/summary'] });
+      
+      onClose();
+    } catch (error: any) {
+      toast({
+        title: "Sell Failed",
+        description: error.message || "Failed to sell position",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSelling(false);
+    }
+  };
+
+  return (
+    <Card className="p-4 bg-card/50">
+      <div className="flex items-center justify-between">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-semibold">{position.symbol}</span>
+            <Badge variant="secondary" className="text-xs">{position.assetType}</Badge>
+            <Badge variant="outline" className="text-xs">{position.timeframe || "N/A"}</Badge>
+          </div>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-muted-foreground">Quantity: </span>
+              <span className="font-mono">{quantity.toFixed(4)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Entry: </span>
+              <span className="font-mono">${entryPrice.toFixed(2)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Current: </span>
+              <span className="font-mono">
+                ${currentPrice.toFixed(2)}
+                {isLoadingQuote && (
+                  <Loader2 className="w-3 h-3 inline-block ml-1 animate-spin text-muted-foreground" />
+                )}
+                {quoteError && !hasValidQuote && (
+                  <span className="text-xs text-muted-foreground ml-1">(stale)</span>
+                )}
+                {hasValidQuote && lastQuoteUpdate && (
+                  <span className="text-xs text-muted-foreground ml-1" title={`Updated ${lastQuoteUpdate.toLocaleTimeString()}`}>
+                    (live)
+                  </span>
+                )}
+              </span>
+            </div>
+            <div>
+              <span className="text-muted-foreground">Unrealized P&L: </span>
+              {isLoadingQuote && !hasValidPrice ? (
+                <span className="font-mono font-semibold text-muted-foreground">
+                  <Loader2 className="w-3 h-3 inline-block mr-1 animate-spin" />
+                  Loading...
+                </span>
+              ) : quoteError && !hasValidPrice ? (
+                <span className="font-mono font-semibold text-muted-foreground text-xs">
+                  Error loading price
+                </span>
+              ) : !hasValidPrice ? (
+                <span className="font-mono font-semibold text-muted-foreground text-xs">
+                  Waiting for price...
+                </span>
+              ) : (
+                <span className={`font-mono font-semibold ${isProfit ? "text-gain" : "text-destructive"}`}>
+                  {unrealizedPnL >= 0 ? "+" : ""}${unrealizedPnL.toFixed(2)} ({unrealizedPnLPercent >= 0 ? "+" : ""}{unrealizedPnLPercent.toFixed(2)}%)
+                  {hasFallbackPrice && !hasValidQuote && (
+                    <span className="text-xs text-muted-foreground ml-1">(fallback)</span>
+                  )}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={handleSell}
+          disabled={isSelling}
+          className="ml-4"
+        >
+          {isSelling ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              Selling...
+            </>
+          ) : (
+            "Sell"
+          )}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { isAuthenticated, isLoading, user, isResolved } = useAuth();
   const hasRedirected = useRef(false);
+  const queryClient = useQueryClient();
 
-  // Fetch portfolio summary data
-  const { data: portfolioSummary, isLoading: isLoadingPortfolio } = useQuery<PortfolioSummary>({
+  // Fetch portfolio summary data - refresh every 2 seconds for real-time updates
+  const { data: portfolioSummary, isLoading: isLoadingPortfolio, error: portfolioError } = useQuery<PortfolioSummary>({
     queryKey: ['/api/portfolio/summary'],
     enabled: isAuthenticated && isResolved,
-    refetchInterval: 5000, // Refresh every 5 seconds for live updates
+    refetchInterval: 2000, // Refresh every 2 seconds for live trading feel
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch('/api/portfolio/summary', {
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to fetch portfolio summary: ${res.status}`);
+      }
+      return res.json();
+    },
   });
+
+  // Log errors for debugging and show toast
+  useEffect(() => {
+    if (portfolioError) {
+      console.error('Portfolio summary error:', portfolioError);
+      toast({
+        title: "Failed to load portfolio data",
+        description: portfolioError instanceof Error ? portfolioError.message : "Please refresh the page",
+        variant: "destructive",
+      });
+    }
+  }, [portfolioError, toast]);
 
   useEffect(() => {
     // Only redirect once auth is definitively resolved
@@ -66,6 +307,31 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  // Fetch open positions - refresh every 2 seconds for real-time P&L updates
+  const { data: openPositions, isLoading: isLoadingPositions, refetch: refetchPositions } = useQuery<any[]>({
+    queryKey: ['/api/trade/open-positions'],
+    enabled: isAuthenticated && isResolved,
+    refetchInterval: 2000, // Refresh every 2 seconds for live trading
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch('/api/trade/open-positions', {
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        return [];
+      }
+      return res.json();
+    },
+  });
+
+  // Refresh portfolio summary when positions change
+  useEffect(() => {
+    if (openPositions) {
+      queryClient.invalidateQueries({ queryKey: ['/api/portfolio/summary'] });
+    }
+  }, [openPositions, queryClient]);
 
   // Popular assets to show in Live Market
   const popularAssets = [
@@ -101,13 +367,16 @@ export default function Dashboard() {
               <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-total-balance">
                 Loading...
               </div>
+            ) : portfolioError ? (
+              <div className="text-sm text-destructive" data-testid="text-total-balance-error">
+                Error loading data
+              </div>
             ) : (
               <>
                 <div className="text-3xl font-condensed font-bold" data-testid="text-total-balance">
                   ${portfolioSummary?.totalBalance?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
                 </div>
                 <PriceDisplay
-                  value={0}
                   change={portfolioSummary?.balanceChange || 0}
                   changePercent={portfolioSummary?.balanceChangePercent || 0}
                   currency=""
@@ -178,6 +447,27 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
+          {/* Open Positions */}
+          {openPositions && openPositions.length > 0 && (
+            <GlassCard className="p-6" neonBorder>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-condensed font-semibold">Open Positions</h2>
+                <Badge variant="secondary">{openPositions.length} Active</Badge>
+              </div>
+              <ScrollArea className="h-[300px]">
+                <div className="space-y-3">
+                  {openPositions.map((position) => (
+                    <OpenPositionCard
+                      key={position.id}
+                      position={position}
+                      onClose={() => refetchPositions()}
+                    />
+                  ))}
+                </div>
+              </ScrollArea>
+            </GlassCard>
+          )}
+
           <div>
             <h2 className="text-2xl font-condensed font-semibold mb-4">Live Market</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -256,6 +546,10 @@ export default function Dashboard() {
               <Button variant="outline" className="w-full justify-start" data-testid="button-market-watch" onClick={() => setLocation('/market-watch')}>
                 <TrendingUp className="w-4 h-4 mr-2" />
                 Market Watch
+              </Button>
+              <Button variant="outline" className="w-full justify-start" data-testid="button-trade-history" onClick={() => setLocation('/trade-history')}>
+                <ArrowUpRight className="w-4 h-4 mr-2" />
+                Trade History
               </Button>
             </div>
           </GlassCard>

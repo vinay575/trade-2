@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
 interface PriceDisplayProps {
-  value: number;
+  value?: number;
   change?: number;
   changePercent?: number;
   currency?: string;
@@ -32,9 +32,11 @@ export function PriceDisplay({
 
   return (
     <div className={cn("flex items-center gap-2", className)} data-testid="price-display">
-      <span className={cn(sizeClasses[size], animate && "animate-pulse")}>
-        {currency}{value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-      </span>
+      {value !== undefined && (
+        <span className={cn(sizeClasses[size], animate && "animate-pulse")}>
+          {currency}{value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+      )}
       {change !== undefined && (
         <div className={cn(
           "flex items-center gap-1 text-sm font-medium",

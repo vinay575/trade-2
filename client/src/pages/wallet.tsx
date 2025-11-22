@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { useWallet } from "@/hooks/useWallet";
+import { useQuery } from "@tanstack/react-query";
 import { GlassCard } from "@/components/GlassCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Wallet as WalletIcon, ArrowDownToLine, ArrowUpFromLine, History } from "lucide-react";
+
+interface WalletSummary {
+  totalBalance: number;
+  inOrders: number;
+  totalDeposits: number;
+}
 
 export default function Wallet() {
   const { toast } = useToast();
@@ -35,6 +42,24 @@ export default function Wallet() {
   }, [isAuthenticated, isLoading]); // Removed toast from dependencies
 
   const { ledger, isLoadingLedger, deposit, withdraw, isDepositing, isWithdrawing } = useWallet();
+  
+  // Fetch wallet summary data - refresh every 2 seconds for live balance updates
+  const { data: walletSummary, isLoading: isLoadingSummary } = useQuery<WalletSummary>({
+    queryKey: ['/api/wallet/summary'],
+    enabled: isAuthenticated,
+    refetchInterval: 2000, // Refresh every 2 seconds for live trading
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
+    queryFn: async () => {
+      const res = await fetch('/api/wallet/summary', {
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to fetch wallet summary: ${res.status}`);
+      }
+      return res.json();
+    },
+  });
 
   const handleDeposit = (amount: string, method: string) => {
     deposit({ amount, method });
@@ -138,7 +163,7 @@ export default function Wallet() {
                   <Input type="number" placeholder="0.00" data-testid="input-withdraw-amount" />
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Available Balance: $125,847.32
+                  Available Balance: ${walletSummary?.totalBalance?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
                 </div>
                 <Button 
                   className="w-full" 
@@ -164,10 +189,18 @@ export default function Wallet() {
             <h3 className="text-sm font-medium text-muted-foreground">Total Balance</h3>
             <WalletIcon className="w-5 h-5 text-primary" />
           </div>
-          <div className="text-3xl font-condensed font-bold" data-testid="text-balance">
-            $125,847.32
-          </div>
-          <div className="text-sm text-muted-foreground mt-2">Available for trading</div>
+          {isLoadingSummary ? (
+            <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-balance">
+              Loading...
+            </div>
+          ) : (
+            <>
+              <div className="text-3xl font-condensed font-bold" data-testid="text-balance">
+                ${walletSummary?.totalBalance?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+              </div>
+              <div className="text-sm text-muted-foreground mt-2">Available for trading</div>
+            </>
+          )}
         </GlassCard>
 
         <GlassCard className="p-6">
@@ -175,10 +208,18 @@ export default function Wallet() {
             <h3 className="text-sm font-medium text-muted-foreground">In Orders</h3>
             <ArrowUpFromLine className="w-5 h-5 text-primary" />
           </div>
-          <div className="text-3xl font-condensed font-bold" data-testid="text-in-orders">
-            $12,543.00
-          </div>
-          <div className="text-sm text-muted-foreground mt-2">Locked in open orders</div>
+          {isLoadingSummary ? (
+            <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-in-orders">
+              Loading...
+            </div>
+          ) : (
+            <>
+              <div className="text-3xl font-condensed font-bold" data-testid="text-in-orders">
+                ${walletSummary?.inOrders?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+              </div>
+              <div className="text-sm text-muted-foreground mt-2">Locked in open orders</div>
+            </>
+          )}
         </GlassCard>
 
         <GlassCard className="p-6">
@@ -186,10 +227,18 @@ export default function Wallet() {
             <h3 className="text-sm font-medium text-muted-foreground">Total Deposits</h3>
             <ArrowDownToLine className="w-5 h-5 text-teal" />
           </div>
-          <div className="text-3xl font-condensed font-bold" data-testid="text-total-deposits">
-            $225,000.00
-          </div>
-          <div className="text-sm text-muted-foreground mt-2">All-time deposits</div>
+          {isLoadingSummary ? (
+            <div className="text-3xl font-condensed font-bold animate-pulse" data-testid="text-total-deposits">
+              Loading...
+            </div>
+          ) : (
+            <>
+              <div className="text-3xl font-condensed font-bold" data-testid="text-total-deposits">
+                ${walletSummary?.totalDeposits?.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '0.00'}
+              </div>
+              <div className="text-sm text-muted-foreground mt-2">All-time deposits</div>
+            </>
+          )}
         </GlassCard>
       </div>
 

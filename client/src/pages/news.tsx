@@ -55,9 +55,18 @@ interface NewsArticle {
 export default function News() {
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
 
-  const { data: newsData, isLoading } = useQuery<{ articles: NewsArticle[] }>({
+  const { data: newsData, isLoading, dataUpdatedAt } = useQuery<{ articles: NewsArticle[] }>({
     queryKey: [`/api/news/financial?category=${selectedCategory}&limit=20`],
-    refetchInterval: 5 * 60 * 1000,
+    queryFn: async () => {
+      const res = await fetch(`/api/news/financial?category=${selectedCategory}&limit=20`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch news: ${res.status}`);
+      }
+      return res.json();
+    },
+    refetchInterval: 2 * 60 * 1000, // Refresh every 2 minutes for live news updates
+    refetchOnWindowFocus: true, // Refetch when user returns to tab
+    refetchOnMount: true, // Refetch when component mounts
   });
 
   const newsArticles = newsData?.articles || [];
@@ -121,6 +130,27 @@ export default function News() {
         <div>
           <h1 className="text-4xl font-condensed font-bold mb-2">Market News</h1>
           <p className="text-muted-foreground">Stay informed with the latest market updates and analysis from real financial sources</p>
+          {dataUpdatedAt && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Last updated: {new Date(dataUpdatedAt).toLocaleTimeString("en-US", { 
+                hour: "2-digit", 
+                minute: "2-digit" 
+              })}
+              {(() => {
+                const now = new Date();
+                const lastUpdate = new Date(dataUpdatedAt);
+                const diffMs = now.getTime() - lastUpdate.getTime();
+                const diffMins = Math.floor(diffMs / 60000);
+                if (diffMins < 1) {
+                  return " (Just now)";
+                } else if (diffMins < 60) {
+                  return ` (${diffMins}m ago)`;
+                }
+                const diffHours = Math.floor(diffMins / 60);
+                return ` (${diffHours}h ago)`;
+              })()}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="gap-2">

@@ -32,6 +32,49 @@ const getDb = () => {
   return db;
 };
 
+// Helper function to retry database operations on connection errors
+async function retryDbOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  delayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Check if it's a connection error that we should retry
+      const isConnectionError = 
+        error?.code === '57P01' || // Neon connection termination
+        error?.message?.includes('terminating connection') ||
+        error?.message?.includes('Connection terminated') ||
+        error?.message?.includes('ENOTFOUND') ||
+        error?.message?.includes('ECONNREFUSED') ||
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ENOTFOUND' ||
+        error?.code === 'ECONNRESET';
+      
+      if (isConnectionError && attempt < maxRetries) {
+        const delay = delayMs * Math.pow(2, attempt - 1); // Exponential backoff
+        // Don't log Neon termination errors as they're expected
+        if (error?.code !== '57P01') {
+          console.warn(`[DB] Connection error (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, error.message);
+        }
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      
+      // If it's not a connection error or we've exhausted retries, throw
+      throw error;
+    }
+  }
+  
+  throw lastError || new Error('Database operation failed after retries');
+}
+
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
@@ -59,6 +102,7 @@ export interface IStorage {
   getOrdersByUser(userId: string): Promise<Order[]>;
   getAllOrders(): Promise<Order[]>;
   updateOrderStatus(id: string, status: string): Promise<Order>;
+  updateOrder(id: string, updates: Partial<Pick<Order, 'status' | 'closePrice' | 'profitLoss' | 'profitLossPercent' | 'closedAt'>>): Promise<Order>;
   
   getHoldingsByUser(userId: string): Promise<Holding[]>;
   upsertHolding(holding: InsertHolding): Promise<Holding>;
@@ -262,6 +306,30 @@ export class DatabaseStorage implements IStorage {
       .update(orders)
       .set({ status, updatedAt: new Date() })
       .where(eq(orders.id, id));
+    const [updated] = await database.select().from(orders).where(eq(orders.id, id));
+    if (!updated) {
+      throw new Error("Unable to load updated order");
+    }
+    return updated;
+  }
+
+  async updateOrder(id: string, updates: Partial<Pick<Order, 'status' | 'closePrice' | 'profitLoss' | 'profitLossPercent' | 'closedAt'>>): Promise<Order> {
+    const database = getDb();
+    const updateData: any = {
+      updatedAt: new Date(),
+    };
+    
+    if (updates.status !== undefined) updateData.status = updates.status;
+    if (updates.closePrice !== undefined) updateData.closePrice = updates.closePrice;
+    if (updates.profitLoss !== undefined) updateData.profitLoss = updates.profitLoss;
+    if (updates.profitLossPercent !== undefined) updateData.profitLossPercent = updates.profitLossPercent;
+    if (updates.closedAt !== undefined) updateData.closedAt = updates.closedAt;
+    
+    await database
+      .update(orders)
+      .set(updateData)
+      .where(eq(orders.id, id));
+    
     const [updated] = await database.select().from(orders).where(eq(orders.id, id));
     if (!updated) {
       throw new Error("Unable to load updated order");
@@ -537,6 +605,18 @@ export class MemStorage implements IStorage {
     const updated: Order = {
       ...order,
       status,
+      updatedAt: new Date(),
+    };
+    this.orders.set(id, updated);
+    return updated;
+  }
+
+  async updateOrder(id: string, updates: Partial<Pick<Order, 'status' | 'closePrice' | 'profitLoss' | 'profitLossPercent' | 'closedAt'>>): Promise<Order> {
+    const order = this.orders.get(id);
+    if (!order) throw new Error("Order not found");
+    const updated: Order = {
+      ...order,
+      ...updates,
       updatedAt: new Date(),
     };
     this.orders.set(id, updated);

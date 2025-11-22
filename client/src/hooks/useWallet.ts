@@ -21,6 +21,8 @@ export function useWallet() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/wallet/ledger"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/wallet/summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/portfolio/summary"] });
       toast({
         title: "Deposit successful",
         description: "Funds have been added to your wallet",
@@ -52,6 +54,8 @@ export function useWallet() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/wallet/ledger"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/wallet/summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/portfolio/summary"] });
       toast({
         title: "Withdrawal initiated",
         description: "Your withdrawal is being processed",

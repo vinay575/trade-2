@@ -118,15 +118,29 @@ export const orders = pgTable("orders", {
   quantity: numeric("quantity", { precision: 20, scale: 8 }).notNull(),
   price: numeric("price", { precision: 20, scale: 8 }),
   stopPrice: numeric("stop_price", { precision: 20, scale: 8 }),
-  status: varchar("status", { length: 32 }).notNull().default("pending"), // pending, filled, partial, cancelled, rejected
+  timeframe: varchar("timeframe", { length: 16 }), // 1m, 1h, 1d, 1w - for auto-close trades
+  status: varchar("status", { length: 32 }).notNull().default("pending"), // pending, filled, partial, cancelled, rejected, closed
   filledQuantity: numeric("filled_quantity", { precision: 20, scale: 8 }).default("0"),
   averagePrice: numeric("average_price", { precision: 20, scale: 8 }),
+  closePrice: numeric("close_price", { precision: 20, scale: 8 }), // Price when trade was closed
+  profitLoss: numeric("profit_loss", { precision: 20, scale: 8 }), // Calculated P&L
+  profitLossPercent: numeric("profit_loss_percent", { precision: 20, scale: 8 }), // P&L percentage
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
   executedAt: timestamp("executed_at"),
+  closedAt: timestamp("closed_at"), // When trade was auto-closed or manually closed
 });
 
-export const insertOrderSchema = createInsertSchema(orders).omit({ id: true, createdAt: true, updatedAt: true, executedAt: true });
+export const insertOrderSchema = createInsertSchema(orders).omit({ 
+  id: true, 
+  createdAt: true, 
+  updatedAt: true, 
+  executedAt: true,
+  closePrice: true,
+  profitLoss: true,
+  profitLossPercent: true,
+  closedAt: true,
+});
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type Order = typeof orders.$inferSelect;
 

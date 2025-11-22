@@ -30,9 +30,8 @@ export default function Markets() {
   const [timeframe, setTimeframe] = useState<"1h" | "4h" | "1d" | "1w">("1d");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Get current quote for selected symbol - load once, no auto-refresh
-  // 'enabled' must be true so the data actually loads; auto-refresh is still disabled
-  const { data: quote, isLoading: isLoadingQuote } = useYahooQuote(selectedSymbol, true, false);
+  // Get current quote with live updates (every 5 seconds)
+  const { data: quote, isLoading: isLoadingQuote } = useYahooQuote(selectedSymbol, true, true);
   
   // Map timeframe to Yahoo Finance intervals and ranges
   const { interval, range } = useMemo(() => {
@@ -58,8 +57,18 @@ export default function Markets() {
   );
 
 
-  // Format candle data for charts - ONLY use real API data
+  // Format candle data for charts and merge with live quote
   const chartData = useMemo(() => {
+    const data: Array<{
+      time: number;
+      price: number;
+      volume: number;
+      high: number;
+      low: number;
+      open: number;
+      close: number;
+    }> = [];
+    
     // Only use real API data from Yahoo Finance
     if (candlesData && candlesData.chart && candlesData.chart.result && candlesData.chart.result.length > 0) {
       try {
@@ -81,7 +90,7 @@ export default function Markets() {
               
               if (price > 0 && !isNaN(price)) {
                 return {
-                  time: new Date(timestamp * 1000).toLocaleDateString(),
+                  time: timestamp * 1000, // Store as timestamp in milliseconds
                   price: price,
                   volume: volume || 0,
                   high: highPrice || price,
@@ -94,18 +103,57 @@ export default function Markets() {
             })
             .filter((item): item is NonNullable<typeof item> => item !== null);
           
-          if (validData.length > 0) {
-            return validData;
-          }
+          data.push(...validData);
         }
       } catch (error) {
         console.error("Error processing candle data:", error);
       }
     }
     
-    // Return empty array if no valid data - don't use mock data
-    return [];
-  }, [candlesData, timeframe]);
+    // Add live quote price as the latest point if available
+    if (quote && quote.regularMarketPrice > 0) {
+      const now = Date.now();
+      const lastCandleTime = data.length > 0 ? data[data.length - 1].time : 0;
+      
+      // Only add live price if it's been more than a minute since last candle
+      const timeSinceLastCandle = now - lastCandleTime;
+      const shouldAddLivePrice = 
+        data.length === 0 || 
+        timeSinceLastCandle > 60000; // More than 1 minute since last candle
+      
+      if (shouldAddLivePrice) {
+        // Remove any existing live price point (if we're updating)
+        const filteredData = data.filter(item => {
+          const timeDiff = Math.abs(item.time - now);
+          return timeDiff > 30000; // Remove points within 30 seconds of now
+        });
+        
+        filteredData.push({
+          time: now,
+          price: quote.regularMarketPrice,
+          volume: 0, // Live quote doesn't have volume
+          high: quote.regularMarketDayHigh || quote.regularMarketPrice,
+          low: quote.regularMarketDayLow || quote.regularMarketPrice,
+          open: quote.regularMarketOpen || quote.regularMarketPrice,
+          close: quote.regularMarketPrice,
+        });
+        
+        return filteredData.sort((a, b) => a.time - b.time);
+      }
+    }
+    
+    // Sort by time to ensure chronological order
+    return data.sort((a, b) => a.time - b.time);
+  }, [candlesData, quote, timeframe]);
+
+  // Get last data timestamp for freshness indicator
+  const lastDataTime = useMemo(() => {
+    if (chartData.length > 0) {
+      const lastTimestamp = chartData[chartData.length - 1].time;
+      return new Date(lastTimestamp);
+    }
+    return null;
+  }, [chartData]);
 
   // Get quotes for multiple symbols for the asset list
   const allSymbols = [...STOCK_SYMBOLS, ...CRYPTO_SYMBOLS];
@@ -244,7 +292,29 @@ export default function Markets() {
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <BarChart3 className="w-5 h-5 text-primary" />
-                  <h3 className="text-lg font-condensed font-semibold">Price Chart</h3>
+                  <div>
+                    <h3 className="text-lg font-condensed font-semibold">Price Chart</h3>
+                    {lastDataTime && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Last: {lastDataTime.toLocaleString("en-US", { 
+                          month: "short", 
+                          day: "numeric", 
+                          hour: "2-digit", 
+                          minute: "2-digit" 
+                        })}
+                        {(() => {
+                          const now = new Date();
+                          const diffMs = now.getTime() - lastDataTime.getTime();
+                          const diffMins = Math.floor(diffMs / 60000);
+                          if (diffMins < 60) {
+                            return ` (${diffMins}m ago)`;
+                          }
+                          const diffHours = Math.floor(diffMins / 60);
+                          return ` (${diffHours}h ago)`;
+                        })()}
+                      </p>
+                    )}
+                  </div>
                 </div>
                 {!isLoadingCandles && chartData.length > 0 && (
                   <Badge variant="secondary" className="text-xs gap-2">
@@ -271,9 +341,14 @@ export default function Markets() {
                       tick={{ fill: "hsl(var(--muted-foreground))" }}
                       tickFormatter={(value) => {
                         const date = new Date(value);
-                        return timeframe === "1d" || timeframe === "1w" 
-                          ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                          : date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        if (timeframe === "1d" || timeframe === "1w") {
+                          return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                        } else if (timeframe === "1h") {
+                          return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        } else if (timeframe === "4h") {
+                          return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        }
+                        return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
                       }}
                     />
                     <YAxis 
@@ -325,9 +400,14 @@ export default function Markets() {
                       tick={{ fill: "hsl(var(--muted-foreground))" }}
                       tickFormatter={(value) => {
                         const date = new Date(value);
-                        return timeframe === "1d" || timeframe === "1w" 
-                          ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-                          : date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        if (timeframe === "1d" || timeframe === "1w") {
+                          return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                        } else if (timeframe === "1h") {
+                          return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        } else if (timeframe === "4h") {
+                          return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+                        }
+                        return date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
                       }}
                     />
                     <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
